@@ -15,7 +15,7 @@ function registrar(tipo) {
 
 async function leituraReal() {
   try {
-    const r = await fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=2");
+    const r = await fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=50");
     const dados = await r.json();
     const vela = dados[1];
     const open = parseFloat(vela[1]);
