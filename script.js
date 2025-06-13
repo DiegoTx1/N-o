@@ -4,25 +4,32 @@
 let win = 0, loss = 0;
 let ultimos = [];
 let timer = 300; // Timer regressivo de 5 minutos (formato 4:59)
+let dadosEmTempoReal = {
+  rsi: 0,
+  adx: 0,
+  macdHistograma: 0,
+  sma9: 0,
+  ema21: 0,
+  ema50: 0,
+  fractal: "",
+  precoAtual: 0
+};
 
 // =============================================
 // FUNÇÕES PRINCIPAIS
 // =============================================
 
-// Atualiza relógio na interface
 function atualizarHora() {
   const agora = new Date();
   document.getElementById("hora").textContent = agora.toLocaleTimeString("pt-BR");
 }
 
-// Registra WIN/LOSS
 function registrar(tipo) {
   if (tipo === 'WIN') win++;
   else loss++;
   document.getElementById("historico").textContent = `${win} WIN / ${loss} LOSS`;
 }
 
-// Formata timer para "4:59"
 function formatarTimer(segundos) {
   const minutos = Math.floor(segundos / 60);
   const segundosRestantes = segundos % 60;
@@ -30,77 +37,99 @@ function formatarTimer(segundos) {
 }
 
 // =============================================
-// ANÁLISE TÉCNICA (STOCKITY PRO)
+// ATUALIZAÇÃO EM TEMPO REAL
 // =============================================
-async function leituraReal() {
+
+function atualizarInterfaceEmTempoReal() {
+  document.getElementById("criterios").innerHTML = `
+    <li>RSI: ${dadosEmTempoReal.rsi.toFixed(2)} ${dadosEmTempoReal.rsi < 30 ? "↓" : dadosEmTempoReal.rsi > 70 ? "↑" : "-"}</li>
+    <li>ADX: ${dadosEmTempoReal.adx.toFixed(2)} ${dadosEmTempoReal.adx > 25 ? "✅ Tendência Forte" : "✖️ Tendência Fraca"}</li>
+    <li>MACD: ${dadosEmTempoReal.macdHistograma.toFixed(4)}</li>
+    <li>Médias: ${dadosEmTempoReal.sma9.toFixed(2)} > ${dadosEmTempoReal.ema21.toFixed(2)} > ${dadosEmTempoReal.ema50.toFixed(2)}</li>
+    <li>Fractal: ${dadosEmTempoReal.fractal || "Nenhum"}</li>
+    <li>Preço Atual: ${dadosEmTempoReal.precoAtual.toFixed(2)}</li>
+  `;
+}
+
+// =============================================
+// ANÁLISE TÉCNICA
+// =============================================
+
+async function buscarDadosBinance() {
+  const response = await fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100");
+  const dados = await response.json();
+  return {
+    closes: dados.map(v => parseFloat(v[4])),
+    highs: dados.map(v => parseFloat(v[2])),
+    lows: dados.map(v => parseFloat(v[3])),
+    precoAtual: parseFloat(dados[dados.length - 1][4])
+  };
+}
+
+async function atualizarIndicadores() {
   try {
-    // Busca dados da Binance (velas de 5min)
-    const response = await fetch("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100");
-    const dados = await response.json();
+    const { closes, highs, lows, precoAtual } = await buscarDadosBinance();
     
-    // Extrai dados das velas
-    const closes = dados.map(v => parseFloat(v[4]));
-    const highs = dados.map(v => parseFloat(v[2]));
-    const lows = dados.map(v => parseFloat(v[3]));
+    dadosEmTempoReal = {
+      rsi: calcularRSI(closes, 14),
+      adx: calcularADX(highs, lows, closes, 14),
+      macdHistograma: calcularMACD(closes, 12, 26, 9).histograma,
+      sma9: calcularSMA(closes, 9),
+      ema21: calcularEMA(closes, 21),
+      ema50: calcularEMA(closes, 50),
+      fractal: detectarFractais(highs, lows, 5).ultimo,
+      precoAtual
+    };
 
-    // Calcula indicadores
-    const rsi = calcularRSI(closes, 14);
-    const macd = calcularMACD(closes, 12, 26, 9);
-    const sma9 = calcularSMA(closes, 9);
-    const ema21 = calcularEMA(closes, 21);
-    const ema50 = calcularEMA(closes, 50);
-    const fractals = detectarFractais(highs, lows, 5);
-    const adx = calcularADX(highs, lows, closes, 14);
-
-    // Lógica de decisão (Stockity Pro)
-    let comando = "ESPERAR";
-    if (rsi < 30 && sma9 > ema21 && ema21 > ema50 && macd.histograma > 0 && fractals.ultimo === "FUNDO" && adx > 25) {
-      comando = "CALL";
-    } 
-    else if (rsi > 70 && sma9 < ema21 && ema21 < ema50 && macd.histograma < 0 && fractals.ultimo === "TOPO" && adx > 25) {
-      comando = "PUT";
-    }
-
-    // Atualiza interface
-    atualizarInterface(comando, rsi, adx, macd, sma9, ema21, ema50, fractals);
+    atualizarInterfaceEmTempoReal();
+    return dadosEmTempoReal;
 
   } catch (e) {
-    console.error("Erro na leitura:", e);
+    console.error("Erro ao atualizar indicadores:", e);
   }
 }
 
-// Atualiza elementos da interface
-function atualizarInterface(comando, rsi, adx, macd, sma9, ema21, ema50, fractals) {
+async function leituraReal() {
+  const indicadores = await atualizarIndicadores();
+  
+  let comando = "ESPERAR";
+  if (
+    indicadores.rsi < 30 && 
+    indicadores.sma9 > indicadores.ema21 && 
+    indicadores.ema21 > indicadores.ema50 && 
+    indicadores.macdHistograma > 0 && 
+    indicadores.fractal === "FUNDO" &&
+    indicadores.adx > 25
+  ) {
+    comando = "CALL";
+  } 
+  else if (
+    indicadores.rsi > 70 && 
+    indicadores.sma9 < indicadores.ema21 && 
+    indicadores.ema21 < indicadores.ema50 && 
+    indicadores.macdHistograma < 0 && 
+    indicadores.fractal === "TOPO" &&
+    indicadores.adx > 25
+  ) {
+    comando = "PUT";
+  }
+
   document.getElementById("comando").textContent = comando;
-  document.getElementById("score").textContent = `RSI: ${rsi.toFixed(2)} | ADX: ${adx.toFixed(2)}`;
+  document.getElementById("score").textContent = `RSI: ${indicadores.rsi.toFixed(2)} | ADX: ${indicadores.adx.toFixed(2)}`;
 
-  // Critérios técnicos
-  const criterios = [
-    `RSI: ${rsi.toFixed(2)} ${rsi < 30 ? "↓" : rsi > 70 ? "↑" : "-"}`,
-    `ADX: ${adx.toFixed(2)} ${adx > 25 ? "✅ Tendência Forte" : "✖️ Tendência Fraca"}`,
-    `MACD: ${macd.histograma.toFixed(4)}`,
-    `Médias: ${sma9.toFixed(2)} > ${ema21.toFixed(2)} > ${ema50.toFixed(2)}`,
-    `Fractal: ${fractals.ultimo || "Nenhum"}`
-  ];
-
-  document.getElementById("criterios").innerHTML = criterios.map(c => `<li>${c}</li>`).join("");
-
-  // Atualiza histórico
   const horario = new Date().toLocaleTimeString("pt-BR");
-  ultimos.unshift(`${horario} - ${comando} (RSI: ${rsi.toFixed(2)})`);
+  ultimos.unshift(`${horario} - ${comando} (RSI: ${indicadores.rsi.toFixed(2)})`);
   if (ultimos.length > 5) ultimos.pop();
   document.getElementById("ultimos").innerHTML = ultimos.map(i => `<li>${i}</li>`).join("");
 
-  // Sons de alerta
   if (comando === "CALL") document.getElementById("som-call").play();
   if (comando === "PUT") document.getElementById("som-put").play();
 }
 
 // =============================================
-// FUNÇÕES DE INDICADORES TÉCNICOS
+// FUNÇÕES DE INDICADORES (MANTIDAS)
 // =============================================
 
-// Calcula RSI (14 períodos)
 function calcularRSI(closes, periodo) {
   let ganhos = 0, perdas = 0;
   for (let i = 1; i <= periodo; i++) {
@@ -112,7 +141,6 @@ function calcularRSI(closes, periodo) {
   return 100 - (100 / (1 + rs));
 }
 
-// Calcula MACD (12, 26, 9)
 function calcularMACD(closes, rapida, lenta, sinal) {
   const ema12 = calcularEMA(closes, rapida);
   const ema26 = calcularEMA(closes, lenta);
@@ -125,13 +153,11 @@ function calcularMACD(closes, rapida, lenta, sinal) {
   };
 }
 
-// Calcula SMA (Média Móvel Simples)
 function calcularSMA(dados, periodo) {
   const slice = dados.slice(-periodo);
   return slice.reduce((a, b) => a + b, 0) / periodo;
 }
 
-// Calcula EMA (Média Móvel Exponencial)
 function calcularEMA(dados, periodo) {
   const k = 2 / (periodo + 1);
   let ema = dados[0];
@@ -141,7 +167,6 @@ function calcularEMA(dados, periodo) {
   return ema;
 }
 
-// Detecta fractais (topos/fundos em 5 velas)
 function detectarFractais(highs, lows, periodo) {
   const fractais = [];
   for (let i = periodo; i < highs.length - periodo; i++) {
@@ -157,31 +182,31 @@ function detectarFractais(highs, lows, periodo) {
   };
 }
 
-// Calcula ADX (14 períodos - versão simplificada)
 function calcularADX(highs, lows, closes, periodo) {
-  // Cálculo simplificado para exemplo (substitua por biblioteca técnica para precisão)
+  // Versão simplificada (para versão profissional, use technicalindicators)
   const variacao = Math.abs(closes[closes.length - 1] - closes[closes.length - periodo]);
   const mediaVariacao = variacao / periodo;
-  return Math.min(mediaVariacao * 10, 60); // Simula ADX entre 0-60
+  return Math.min(mediaVariacao * 10, 60);
 }
 
 // =============================================
 // TIMER E INICIALIZAÇÃO
 // =============================================
 
-// Timer regressivo (5 minutos)
+// Atualiza indicadores a cada 15 segundos (para não sobrecarregar a API)
+setInterval(atualizarIndicadores, 15000);
+
+// Timer principal (5 minutos)
 setInterval(() => {
   timer--;
   document.getElementById("timer").textContent = formatarTimer(timer);
   if (timer <= 0) {
     leituraReal();
-    timer = 300; // Reinicia para 5 minutos
+    timer = 300;
   }
 }, 1000);
 
-// Atualiza relógio a cada 1 segundo
-setInterval(atualizarHora, 1000);
-
-// Inicializa
+// Inicialização
 atualizarHora();
-leituraReal(); // Primeira execução
+atualizarIndicadores(); // Primeira atualização
+leituraReal(); // Primeira análise
