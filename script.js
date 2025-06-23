@@ -25,7 +25,9 @@ const state = {
   suporteKey: 0,
   timeOffset: 0,
   cache: {},
-  reconnectDelay: 5000
+  reconnectDelay: 5000,
+  maxReconnectAttempts: 10,
+  reconnectAttempts: 0
 };
 
 const CONFIG = {
@@ -35,7 +37,7 @@ const CONFIG = {
     CRYPTOCOMPARE: "https://min-api.cryptocompare.com/data",
     WORLD_TIME: "https://worldtimeapi.org/api/ip"
   },
-  WS_ENDPOINT: "wss://stream.binance.com:9443/ws/btcusdt@kline_1m",
+  WS_ENDPOINT: `wss://stream.binance.com:9443/ws/btcusdt@kline_1m`,
   PARES: {
     CRYPTO_IDX: "BTCUSDT"
   },
@@ -89,6 +91,9 @@ const CONFIG = {
   }
 };
 
+// Atualizar endpoint WebSocket com o par configurado
+CONFIG.WS_ENDPOINT = `wss://stream.binance.com:9443/ws/${CONFIG.PARES.CRYPTO_IDX.toLowerCase()}@kline_1m`;
+
 // =============================================
 // SISTEMA DE TENDÊNCIA ATUALIZADO
 // =============================================
@@ -96,7 +101,7 @@ function avaliarTendencia(closes, ema8, ema21, ema200Array, volume, volumeMedio)
   if (ema200Array.length === 0) return { tendencia: "NEUTRA", forca: 0 };
   
   const ultimoClose = closes[closes.length - 1];
-  const ema200 = ema200Array[ema200Array.length-1];
+  const ema200 = ema200Array[ema200Array.length - 1];
   
   // Verificar inclinação da EMA200
   const inclinacaoEMA200 = ema200Array.length > 5 && 
@@ -295,6 +300,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
     if (sinal === "CALL") comandoElement.textContent += " 📈";
     else if (sinal === "PUT") comandoElement.textContent += " 📉";
     else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
+    else if (sinal === "ERRO") comandoElement.textContent = "ERRO ⚠️";
   }
   
   const scoreElement = document.getElementById("score");
@@ -345,7 +351,7 @@ function calcularDesvioPadrao(dados, periodo = CONFIG.PERIODOS.DESVIO_PADRAO) {
   
   const slice = dados.slice(-periodo);
   const media = calcularMedia.simples(slice, periodo);
-  const variancia = slice.reduce((sum, val) => sum + Math.pow(val - media, 2), 0) / periodo;
+  const variancia = slice.reduce((sum, val) => sum + Math.pow(val - media, 2), 0) / (periodo - 1); // Correção: amostral (n-1)
   return Math.sqrt(variancia);
 }
 
@@ -430,6 +436,10 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
     const emaLenta = calcularMedia.exponencial(closes, lenta);
     
     const startIdx = lenta - rapida;
+    if (emaRapida.length < startIdx || emaLenta.length < startIdx) {
+      return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+    }
+    
     const macdLinha = emaRapida.slice(startIdx).map((val, idx) => val - emaLenta[idx]);
     const sinalLinha = calcularMedia.exponencial(macdLinha, sinal);
     
@@ -505,13 +515,22 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
     
     if (dados.length > periodo) {
       const prev = dados[dados.length - 2];
+      const prevSuperTrend = prev.superTrend || upperBand;
       
-      if (prev.close > superTrend) {
-        direcao = 1;
-        superTrend = Math.max(upperBand, prev.superTrend || upperBand);
+      if (prev.close > prevSuperTrend) {
+        if (ultimo.close > upperBand) {
+          superTrend = upperBand;
+        } else {
+          superTrend = lowerBand;
+          direcao = -1;
+        }
       } else {
-        direcao = -1;
-        superTrend = Math.min(lowerBand, prev.superTrend || lowerBand);
+        if (ultimo.close < lowerBand) {
+          superTrend = lowerBand;
+          direcao = -1;
+        } else {
+          superTrend = upperBand;
+        }
       }
     }
     
@@ -534,12 +553,18 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
       const amplitude = vela.high - vela.low;
       if (amplitude === 0) continue;
       
+      // Calcular os limites do bucket
+      const startPrice = Math.floor(vela.low * 100) / 100;
+      const endPrice = Math.ceil(vela.high * 100) / 100;
+      const priceRange = endPrice - startPrice;
       const niveis = 10;
-      const passo = amplitude / niveis;
+      const bucketSize = priceRange / niveis;
       
-      for (let i = 0; i < niveis; i++) {
-        const preco = (vela.low + i * passo).toFixed(precisao);
-        buckets[preco] = (buckets[preco] || 0) + (vela.volume / niveis);
+      if (bucketSize === 0) continue;
+      
+      for (let price = startPrice; price <= endPrice; price += bucketSize) {
+        const roundedPrice = price.toFixed(precisao);
+        buckets[roundedPrice] = (buckets[roundedPrice] || 0) + (vela.volume / niveis);
       }
     }
     
@@ -729,7 +754,11 @@ async function analisarMercado() {
   } catch (e) {
     console.error("Erro na análise:", e);
     atualizarInterface("ERRO", 0, "ERRO", 0);
-    if (++state.tentativasErro > 3) setTimeout(() => location.reload(), 10000);
+    if (++state.tentativasErro > 3) {
+      clearInterval(state.intervaloAtual);
+      if (state.websocket) state.websocket.close();
+      console.error("Muitos erros consecutivos. Sistema pausado.");
+    }
   } finally {
     state.leituraEmAndamento = false;
   }
@@ -740,7 +769,16 @@ async function analisarMercado() {
 // =============================================
 async function obterDadosBinance() {
   try {
-    const response = await fetch(`${CONFIG.API_ENDPOINTS.BINANCE}/klines?symbol=${CONFIG.PARES.CRYPTO_IDX}&interval=1m&limit=100`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    
+    const response = await fetch(
+      `${CONFIG.API_ENDPOINTS.BINANCE}/klines?symbol=${CONFIG.PARES.CRYPTO_IDX}&interval=1m&limit=100`,
+      { signal: controller.signal }
+    );
+    
+    clearTimeout(timeoutId);
+    
     if (!response.ok) throw new Error("Falha na API Binance");
     
     const data = await response.json();
@@ -760,7 +798,15 @@ async function obterDadosBinance() {
 
 async function sincronizarTempo() {
   try {
-    const response = await fetch(CONFIG.API_ENDPOINTS.WORLD_TIME);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    
+    const response = await fetch(CONFIG.API_ENDPOINTS.WORLD_TIME, {
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
     const data = await response.json();
     const serverTime = new Date(data.datetime).getTime();
     state.timeOffset = serverTime - Date.now();
@@ -811,6 +857,7 @@ function iniciarWebSocket() {
   state.websocket.onopen = () => {
     console.log('Conexão WebSocket estabelecida');
     state.reconnectDelay = 5000; // Reset delay
+    state.reconnectAttempts = 0;
   };
   
   state.websocket.onmessage = (event) => {
@@ -823,11 +870,16 @@ function iniciarWebSocket() {
   state.websocket.onerror = (error) => console.error('Erro WebSocket:', error);
   
   state.websocket.onclose = () => {
-    console.log(`Reconectando em ${state.reconnectDelay/1000} segundos...`);
-    setTimeout(() => {
-      iniciarWebSocket();
-      state.reconnectDelay = Math.min(state.reconnectDelay * 2, 60000); // Backoff exponencial
-    }, state.reconnectDelay);
+    if (state.reconnectAttempts < state.maxReconnectAttempts) {
+      console.log(`Reconectando em ${state.reconnectDelay/1000} segundos...`);
+      setTimeout(() => {
+        state.reconnectAttempts++;
+        iniciarWebSocket();
+        state.reconnectDelay = Math.min(state.reconnectDelay * 2, 60000); // Backoff exponencial
+      }, state.reconnectDelay);
+    } else {
+      console.error("Falha permanente na conexão WebSocket. Recarregue a página.");
+    }
   };
 }
 
@@ -852,7 +904,11 @@ async function iniciarAplicativo() {
   iniciarWebSocket();
   
   // Carregar dados históricos
-  state.dadosHistoricos = await obterDadosBinance();
+  try {
+    state.dadosHistoricos = await obterDadosBinance();
+  } catch (e) {
+    console.error("Falha ao carregar dados históricos:", e);
+  }
   
   // Primeira análise
   setTimeout(analisarMercado, 2000);
