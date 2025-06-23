@@ -1,8 +1,3 @@
-Peço desculpas pela confusão anterior. Vamos garantir que o código final que forneci esteja completo e corresponda ao seu código original, mantendo todas as funcionalidades e melhorias sugeridas.
-
-Aqui está o código completo, linha por linha, com as melhorias implementadas, e que deve corresponder ao seu código original:
-
-```javascript
 // =============================================
 // CONFIGURAÇÕES GLOBAIS (ATUALIZADAS PARA BINANCE)
 // =============================================
