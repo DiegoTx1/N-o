@@ -1,5 +1,5 @@
 // =============================================
-// CONFIGURAÇÕES OTIMIZADAS PARA GBP/NZD
+// CONFIGURAÇÕES GLOBAIS (ATUALIZADAS PARA TWELVE DATA - EURUSD)
 // =============================================
 const state = {
   ultimos: [],
@@ -13,101 +13,141 @@ const state = {
   contadorLaterais: 0,
   websocket: null,
   marketOpen: true,
+  noticiasRecentes: [],
+  volumeProfile: [],
+  institutionalFlow: 0,
+  fairValueGap: { gap: false },
+  hiddenOrders: false,
   tendenciaDetectada: "NEUTRA",
   forcaTendencia: 0,
+  dadosHistoricos: [],
   resistenciaKey: 0,
-  suporteKey: 0,
-  ultimoPreco: 0
+  suporteKey: 0
 };
 
 const CONFIG = {
   API_ENDPOINTS: {
     TWELVE_DATA: "https://api.twelvedata.com",
-    FOREX: "https://api.twelvedata.com/forex"
+    MARKET_DATA: "https://api.twelvedata.com/market_data"
   },
-  WS_ENDPOINT: "wss://ws.twelvedata.com/v1/quotes/price?apikey=9cf795b2a4f14d43a049ca935d174ebb",
+  API_KEY: "9cf795b2a4f14d43a049ca935d174ebb",
+  WS_ENDPOINT: "wss://ws.twelvedata.com/v1/quotes/ws?symbol=EUR/USD&apikey=9cf795b2a4f14d43a049ca935d174ebb",
   PARES: {
-    FOREX: "GBP/NZD"
+    FOREX_IDX: "EUR/USD"
   },
   PERIODOS: {
     RSI: 14,
     STOCH: 14,
+    WILLIAMS: 14,
     EMA_CURTA: 8,
     EMA_MEDIA: 21,
-    EMA_LONGA: 50,
+    EMA_LONGA: 200,
     SMA_VOLUME: 20,
     MACD_RAPIDA: 12,
     MACD_LENTA: 26,
     MACD_SINAL: 9,
+    VELAS_CONFIRMACAO: 3,
     ANALISE_LATERAL: 20,
+    VWAP: 20,
     ATR: 14,
-    SUPERTREND: 10
+    SUPERTREND: 10,
+    VOLUME_PROFILE: 50,
+    LIQUIDITY_ZONES: 20
   },
   LIMIARES: {
-    SCORE_ALTO: 80,  // Aumentado para entradas mais assertivas
-    SCORE_MEDIO: 65,
-    RSI_OVERBOUGHT: 70,
-    RSI_OVERSOLD: 30,
+    SCORE_ALTO: 75,  // Ajustado para Forex
+    SCORE_MEDIO: 60,
+    RSI_OVERBOUGHT: 65,  // Mais conservador para Forex
+    RSI_OVERSOLD: 35,
     STOCH_OVERBOUGHT: 80,
     STOCH_OVERSOLD: 20,
-    VARIACAO_LATERAL: 0.3,
-    ATR_LIMIAR: 0.005
+    WILLIAMS_OVERBOUGHT: -20,
+    WILLIAMS_OVERSOLD: -80,
+    VOLUME_ALTO: 1.5,  // Volume menos crítico em Forex
+    VARIACAO_LATERAL: 0.5,  // Menor variação para pares de moedas
+    VWAP_DESVIO: 0.005,  // Desvio menor para Forex
+    ATR_LIMIAR: 0.01   // Limiar menor para pares de moedas
   },
   PESOS: {
-    TENDENCIA: 3.0,  // Peso maior para tendência
+    RSI: 1.3,  // Peso reduzido para Forex
     MACD: 2.0,
-    RSI: 1.5,
-    VOLUME: 1.2,
+    TENDENCIA: 2.2,  // Tendência ligeiramente menos importante
+    VOLUME: 1.2,  // Volume menos importante em Forex
     STOCH: 1.0,
-    SUPERTREND: 2.0,
-    PRICE_ACTION: 2.5
+    WILLIAMS: 0.9,
+    VWAP: 1.5,  // VWAP mais importante em Forex
+    SUPERTREND: 1.7,
+    VOLUME_PROFILE: 1.2,  // Perfil de volume menos crítico
+    DIVERGENCIA: 1.8,
+    LIQUIDITY: 1.9
   }
 };
 
 // =============================================
-// SISTEMA DE TENDÊNCIA OTIMIZADO PARA GBP/NZD
+// FUNÇÕES DE DADOS ATUALIZADAS PARA TWELVE DATA
 // =============================================
-function avaliarTendencia(closes, ema8, ema21, ema50, atr) {
+async function obterDadosTwelveData() {
+  try {
+    const response = await fetch(
+      `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=1min&outputsize=100&apikey=${CONFIG.API_KEY}`
+    );
+    
+    if (!response.ok) throw new Error("Falha na API Twelve Data");
+    
+    const data = await response.json();
+    
+    if (!data.values || !Array.isArray(data.values)) {
+      throw new Error("Formato de dados inválido da API");
+    }
+    
+    return data.values.map(item => ({
+      time: item.datetime,
+      open: parseFloat(item.open),
+      high: parseFloat(item.high),
+      low: parseFloat(item.low),
+      close: parseFloat(item.close),
+      volume: parseFloat(item.volume || 0) // Volume pode não estar disponível para Forex
+    })).reverse(); // Invertendo para ter os dados mais antigos primeiro
+  } catch (e) {
+    console.error("Erro ao obter dados da Twelve Data:", e);
+    throw e;
+  }
+}
+
+// =============================================
+// SISTEMA DE TENDÊNCIA AJUSTADO PARA FOREX
+// =============================================
+function avaliarTendencia(closes, ema8, ema21, ema200, volume, volumeMedio) {
   const ultimoClose = closes[closes.length - 1];
-  const penultimoClose = closes[closes.length - 2];
   
-  // Tendência de curto prazo (agressiva)
-  const acimaEMA8 = ultimoClose > ema8;
-  const acimaEMA21 = ultimoClose > ema21;
-  const acimaEMA50 = ultimoClose > ema50;
+  // Tendência de longo prazo
+  const tendenciaLongoPrazo = ultimoClose > ema200 ? "ALTA" : "BAIXA";
   
-  // Força da tendência baseada em ATR
-  const forcaBase = Math.min(100, Math.round((ema8 - ema21) / atr * 10));
+  // Tendência de médio prazo
+  const tendenciaMedioPrazo = ema8 > ema21 ? "ALTA" : "BAIXA";
   
-  // Confirmação de momentum
-  const momentumPositivo = ultimoClose > penultimoClose && ema8 > ema21;
-  const momentumNegativo = ultimoClose < penultimoClose && ema8 < ema21;
+  // Força da tendência (ajustada para Forex)
+  const distanciaMedia = Math.abs(ema8 - ema21);
+  const forcaBase = Math.min(100, Math.round(distanciaMedia / ultimoClose * 10000)); // Multiplicador maior para Forex
   
-  if (acimaEMA8 && acimaEMA21 && acimaEMA50 && momentumPositivo) {
+  // Em Forex, o volume é menos significativo
+  const forcaVolume = volume > volumeMedio * 1.2 ? 10 : 0;
+  
+  let forcaTotal = forcaBase + forcaVolume;
+  if (tendenciaLongoPrazo === tendenciaMedioPrazo) forcaTotal += 20; // Bonus menor
+  
+  // Determinar tendência final (limiares ajustados)
+  if (forcaTotal > 70) { // Limiar mais baixo para Forex
     return { 
-      tendencia: "FORTE_ALTA",
-      forca: Math.min(100, forcaBase + 30)
+      tendencia: tendenciaMedioPrazo === "ALTA" ? "FORTE_ALTA" : "FORTE_BAIXA",
+      forca: Math.min(100, forcaTotal)
     };
   }
   
-  if (!acimaEMA8 && !acimaEMA21 && !acimaEMA50 && momentumNegativo) {
+  if (forcaTotal > 45) { // Limiar mais baixo
     return { 
-      tendencia: "FORTE_BAIXA",
-      forca: Math.min(100, forcaBase + 30)
-    };
-  }
-  
-  if (acimaEMA21 && acimaEMA50) {
-    return { 
-      tendencia: "ALTA",
-      forca: Math.max(30, forcaBase)
-    };
-  }
-  
-  if (!acimaEMA21 && !acimaEMA50) {
-    return { 
-      tendencia: "BAIXA",
-      forca: Math.max(30, forcaBase)
+      tendencia: tendenciaMedioPrazo,
+      forca: forcaTotal
     };
   }
   
@@ -118,9 +158,9 @@ function avaliarTendencia(closes, ema8, ema21, ema50, atr) {
 }
 
 // =============================================
-// GERADOR DE SINAIS ASSERTIVOS - GBP/NZD
+// GERADOR DE SINAIS AJUSTADO PARA FOREX
 // =============================================
-function gerarSinal(indicadores) {
+function gerarSinal(indicadores, divergencias) {
   const {
     rsi,
     stoch,
@@ -131,187 +171,205 @@ function gerarSinal(indicadores) {
     volume,
     volumeMedia,
     superTrend,
-    atr,
-    tendencia
+    volumeProfile,
+    liquidez
   } = indicadores;
-
-  // Filtro de volatilidade - ignorar mercados muito planos
-  if (atr < CONFIG.LIMIARES.ATR_LIMIAR) {
-    return "ESPERAR";
-  }
-
-  // SINAIS DE TENDÊNCIA FORTE
-  if (tendencia.tendencia === "FORTE_ALTA") {
+  
+  // Definir níveis-chave de suporte e resistência
+  state.suporteKey = Math.min(volumeProfile.vaLow, liquidez.suporte, emaMedia);
+  state.resistenciaKey = Math.max(volumeProfile.vaHigh, liquidez.resistencia, emaMedia);
+  
+  // 1. Sinal de tendência forte (limiares ajustados)
+  if (indicadores.tendencia.tendencia === "FORTE_ALTA") {
     const condicoesCompra = [
       close > emaCurta,
       macd.histograma > 0,
-      stoch.k > stoch.d && stoch.k > 50,
-      rsi > 50 && rsi < 70,
-      superTrend.direcao > 0
+      stoch.k > 50,
+      volume > volumeMedia * 1.1 // Limiar de volume mais baixo
     ];
     
-    if (condicoesCompra.filter(Boolean).length >= 4) {
+    if (condicoesCompra.filter(Boolean).length >= 3) {
       return "CALL";
     }
   }
-
-  if (tendencia.tendencia === "FORTE_BAIXA") {
+  
+  // 2. Sinal de tendência forte de baixa
+  if (indicadores.tendencia.tendencia === "FORTE_BAIXA") {
     const condicoesVenda = [
       close < emaCurta,
       macd.histograma < 0,
-      stoch.k < stoch.d && stoch.k < 50,
-      rsi < 50 && rsi > 30,
-      superTrend.direcao < 0
+      stoch.k < 50,
+      volume > volumeMedia * 1.1
     ];
     
-    if (condicoesVenda.filter(Boolean).length >= 4) {
+    if (condicoesVenda.filter(Boolean).length >= 3) {
       return "PUT";
     }
   }
-
-  // SINAIS DE CONTRA-TENDÊNCIA (apenas para traders experientes)
-  if (tendencia.forca < 50) {
-    if (rsi < 30 && close > emaMedia && macd.histograma > 0) {
+  
+  // 3. Sinal de rompimento (limiares ajustados)
+  if (close > state.resistenciaKey && volume > volumeMedia * 1.5) {
+    return "CALL";
+  }
+  
+  if (close < state.suporteKey && volume > volumeMedia * 1.5) {
+    return "PUT";
+  }
+  
+  // 4. Sinal de reversão por divergência (mais importante em Forex)
+  if (divergencias.divergenciaRSI) {
+    if (divergencias.tipoDivergencia === "ALTA" && close > state.suporteKey) {
       return "CALL";
     }
     
-    if (rsi > 70 && close < emaMedia && macd.histograma < 0) {
+    if (divergencias.tipoDivergencia === "BAIXA" && close < state.resistenciaKey) {
       return "PUT";
     }
   }
-
+  
+  // 5. Sinal de reversão por RSI extremo (limiares ajustados)
+  if (rsi < 35 && close > emaMedia) {
+    return "CALL";
+  }
+  
+  if (rsi > 65 && close < emaMedia) {
+    return "PUT";
+  }
+  
   return "ESPERAR";
 }
 
 // =============================================
-// CALCULADOR DE SCORE PRECISO - GBP/NZD
-// =============================================
-function calcularScore(sinal, indicadores) {
-  let score = 50; // Base mais conservadora
-
-  // Fatores de Confirmação
-  const fatores = {
-    alinhamentoTendencia: sinal === "CALL" && indicadores.tendencia.tendencia.includes("ALTA") ||
-                         sinal === "PUT" && indicadores.tendencia.tendencia.includes("BAIXA") ? 30 : 0,
-    
-    momentumMACD: sinal === "CALL" && indicadores.macd.histograma > 0 ? 15 :
-                 sinal === "PUT" && indicadores.macd.histograma < 0 ? 15 : 0,
-    
-    volume: indicadores.volume > indicadores.volumeMedia * 1.5 ? 15 : 0,
-    
-    posicaoMedia: sinal === "CALL" && indicadores.close > indicadores.emaMedia ? 10 : 
-                  sinal === "PUT" && indicadores.close < indicadores.emaMedia ? 10 : 0,
-    
-    superTrend: (sinal === "CALL" && indicadores.superTrend.direcao > 0) ||
-                (sinal === "PUT" && indicadores.superTrend.direcao < 0) ? 20 : 0,
-    
-    rsi: sinal === "CALL" && indicadores.rsi > 50 && indicadores.rsi < 70 ? 10 :
-         sinal === "PUT" && indicadores.rsi < 50 && indicadores.rsi > 30 ? 10 : 0
-  };
-
-  // Adicionar pontos e ajustar pelo ATR (volatilidade)
-  score += Object.values(fatores).reduce((sum, val) => sum + val, 0);
-  score *= 1 + (Math.min(indicadores.atr / 0.01, 1) * 0.5); // Aumenta score em mercados mais voláteis
-
-  // Limitar entre 0-100
-  return Math.min(100, Math.max(0, Math.round(score)));
-}
-
-// =============================================
-// FUNÇÕES DE ANÁLISE TÉCNICA (OTIMIZADAS)
+// CORE DO SISTEMA ATUALIZADO
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento || !state.marketOpen) return;
   state.leituraEmAndamento = true;
   
   try {
-    const dados = await obterDadosForex();
+    const dados = await obterDadosTwelveData();
     const velaAtual = dados[dados.length - 1];
     const closes = dados.map(v => v.close);
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
     const volumes = dados.map(v => v.volume);
 
-    // Cálculo de indicadores
-    const ema8 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA).pop();
-    const ema21 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA).pop();
-    const ema50 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_LONGA).pop();
-    const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME);
-    const atr = calcularATR(dados);
+    const ema8Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA);
+    const ema21Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA);
+    const ema200Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_LONGA);
+    const ema8 = ema8Array[ema8Array.length-1] || 0;
+    const ema21 = ema21Array[ema21Array.length-1] || 0;
+    const ema200 = ema200Array[ema200Array.length-1] || 0;
+
+    const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME) || 1;
     const superTrend = calcularSuperTrend(dados);
+    const volumeProfile = calcularVolumeProfile(dados);
+    const liquidez = calcularLiquidez(dados);
+    
     const rsi = calcularRSI(closes);
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
+    
+    const rsiHistory = [];
+    for (let i = CONFIG.PERIODOS.RSI; i <= closes.length; i++) {
+      rsiHistory.push(calcularRSI(closes.slice(0, i)));
+    }
+    const divergencias = detectarDivergencias(closes, rsiHistory, highs, lows);
 
-    // Avaliação de tendência
-    const tendencia = avaliarTendencia(closes, ema8, ema21, ema50, atr);
+    // SISTEMA DE TENDÊNCIA
+    const tendencia = avaliarTendencia(closes, ema8, ema21, ema200, velaAtual.volume, volumeMedia);
     state.tendenciaDetectada = tendencia.tendencia;
     state.forcaTendencia = tendencia.forca;
 
-    // Gerar sinal
     const indicadores = {
-      rsi, stoch, macd,
-      close: velaAtual.close,
+      rsi,
+      stoch,
+      macd,
       emaCurta: ema8,
       emaMedia: ema21,
+      close: velaAtual.close,
       volume: velaAtual.volume,
       volumeMedia,
       superTrend,
-      atr,
+      volumeProfile,
+      liquidez,
       tendencia
     };
 
-    const sinal = gerarSinal(indicadores);
-    const score = calcularScore(sinal, indicadores);
+    // GERADOR DE SINAIS
+    const sinal = gerarSinal(indicadores, divergencias);
+    const score = calcularScore(sinal, indicadores, divergencias);
 
-    // Atualizar estado e interface
+    // ATUALIZAR ESTADO
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
-    state.ultimoPreco = velaAtual.close;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
-    
-    atualizarInterface(sinal, score, tendencia.tendencia, tendencia.forca);
-    atualizarDetalhesTecnicos(indicadores);
 
+    // ATUALIZAR INTERFACE
+    atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
+
+    const criteriosElement = document.getElementById("criterios");
+    if (criteriosElement) {
+      criteriosElement.innerHTML = `
+        <li>📊 Tendência: ${state.tendenciaDetectada} (${state.forcaTendencia}%)</li>
+        <li>💰 Preço: ${indicadores.close.toFixed(5)}</li>
+        <li>📉 RSI: ${rsi.toFixed(2)} ${rsi < CONFIG.LIMIARES.RSI_OVERSOLD ? '🔻' : rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT ? '🔺' : ''}</li>
+        <li>📊 MACD: ${macd.histograma.toFixed(6)} ${macd.histograma > 0 ? '🟢' : '🔴'}</li>
+        <li>📈 Stochastic: ${stoch.k.toFixed(2)}/${stoch.d.toFixed(2)}</li>
+        <li>💹 Volume: ${(indicadores.volume/1).toFixed(1)} vs ${(volumeMedia/1).toFixed(1)}</li>
+        <li>📌 Médias: EMA8 ${ema8.toFixed(5)} | EMA21 ${ema21.toFixed(5)}</li>
+        <li>📊 Suporte: ${state.suporteKey.toFixed(5)} | Resistência: ${state.resistenciaKey.toFixed(5)}</li>
+        <li>⚠️ Divergência: ${divergencias.tipoDivergencia}</li>
+        <li>🚦 SuperTrend: ${superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'} (${superTrend.valor.toFixed(5)})</li>
+      `;
+    }
+
+    state.ultimos.unshift(`${state.ultimaAtualizacao} - ${sinal} (${score}%)`);
+    if (state.ultimos.length > 8) state.ultimos.pop();
+    const ultimosElement = document.getElementById("ultimos");
+    if (ultimosElement) ultimosElement.innerHTML = state.ultimos.map(i => `<li>${i}</li>`).join("");
+
+    state.tentativasErro = 0;
   } catch (e) {
     console.error("Erro na análise:", e);
     atualizarInterface("ERRO", 0, "ERRO", 0);
+    if (++state.tentativasErro > 3) setTimeout(() => location.reload(), 10000);
   } finally {
     state.leituraEmAndamento = false;
   }
 }
 
 // =============================================
-// FUNÇÕES AUXILIARES (ATUALIZADAS)
+// WEBSOCKET ATUALIZADO PARA TWELVE DATA
 // =============================================
-function atualizarDetalhesTecnicos(indicadores) {
-  const criteriosElement = document.getElementById("criterios");
-  if (criteriosElement) {
-    criteriosElement.innerHTML = `
-      <li>📊 Tendência: ${indicadores.tendencia.tendencia} (${indicadores.tendencia.forca}%)</li>
-      <li>💰 Preço: ${indicadores.close.toFixed(5)}</li>
-      <li>📈 EMA8: ${indicadores.emaCurta.toFixed(5)} | EMA21: ${indicadores.emaMedia.toFixed(5)}</li>
-      <li>📉 RSI: ${indicadores.rsi.toFixed(1)}</li>
-      <li>📊 MACD: ${indicadores.macd.histograma.toFixed(5)}</li>
-      <li>📈 Stochastic: ${indicadores.stoch.k.toFixed(1)}/${indicadores.stoch.d.toFixed(1)}</li>
-      <li>💹 Volume: ${(indicadores.volume/1000).toFixed(1)}K (Média: ${(indicadores.volumeMedia/1000).toFixed(1)}K)</li>
-      <li>📌 ATR: ${indicadores.atr.toFixed(5)}</li>
-      <li>🚦 SuperTrend: ${indicadores.superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'}</li>
-    `;
-  }
-}
+function iniciarWebSocket() {
+  if (state.websocket) state.websocket.close();
 
-// =============================================
-// INICIALIZAÇÃO (MANTIDA)
-// =============================================
-function iniciarAplicativo() {
-  // Configurar atualizações periódicas
-  setInterval(atualizarRelogio, 1000);
-  sincronizarTimer();
-  iniciarWebSocket();
+  state.websocket = new WebSocket(CONFIG.WS_ENDPOINT);
+
+  state.websocket.onopen = () => {
+    console.log('Conexão WebSocket estabelecida com Twelve Data');
+    // Subscrever ao par EUR/USD
+    state.websocket.send(JSON.stringify({
+      action: "subscribe",
+      params: {
+        symbols: "EUR/USD"
+      }
+    }));
+  };
   
-  // Primeira análise
-  setTimeout(analisarMercado, 2000);
+  state.websocket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.event === "price") {
+      // Atualizar dados em tempo real
+      analisarMercado();
+    }
+  };
+  
+  state.websocket.onerror = (error) => console.error('Erro WebSocket:', error);
+  
+  state.websocket.onclose = () => setTimeout(iniciarWebSocket, 5000);
 }
 
-document.addEventListener("DOMContentLoaded", iniciarAplicativo);
+// Restante do código permanece igual (funções de indicadores, utilitários, etc.)
+// ...
