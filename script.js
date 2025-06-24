@@ -1,553 +1,1077 @@
 // =============================================
-// SISTEMA 100% REAL OTIMIZADO PARA OPÇÕES BINÁRIAS
-// META: 85-90% de assertividade em Binary Options
+// SISTEMA 100% REAL - APIS PÚBLICAS GRATUITAS
 // =============================================
+const state = {
+  ultimos: [],
+  timer: 60,
+  ultimaAtualizacao: "",
+  leituraEmAndamento: false,
+  intervaloAtual: null,
+  tentativasErro: 0,
+  ultimoSinal: null,
+  ultimoScore: 0,
+  contadorLaterais: 0,
+  marketOpen: true
+};
 
-const CONFIG_BINARY_OPTIONS = {
-  // ✅ TIMEFRAMES ESPECÍFICOS PARA BINARY OPTIONS
-  TIMEFRAMES: {
-    ANALISE: "1min",        // Análise em 1 minuto
-    CONFIRMACAO: "30sec",   // Confirmação em 30 segundos
-    ENTRADA: "15sec",       // Janela de entrada (15seg antes do fechamento)
-    EXPIRACAO_CURTA: "1min", // Expiração 1 minuto
-    EXPIRACAO_MEDIA: "5min", // Expiração 5 minutos (RECOMENDADA)
-    EXPIRACAO_LONGA: "15min" // Expiração 15 minutos
-  },
-
-  // ✅ HORÁRIOS PREMIUM PARA BINARY OPTIONS
-  HORARIOS_IDEAIS: {
-    // Sessões com maior liquidez e previsibilidade
-    LONDRES_ABERTURA: { inicio: "08:00", fim: "10:00", multiplicador: 1.4 },
-    NY_ABERTURA: { inicio: "14:30", fim: "16:30", multiplicador: 1.5 },    // MELHOR
-    OVERLAP_LONDRES_NY: { inicio: "13:00", fim: "16:00", multiplicador: 1.6 }, // TOP
-    
-    // Evitar estes horários
-    HORARIOS_PERIGOSOS: [
-      { inicio: "22:00", fim: "06:00", motivo: "Baixa liquidez asiática" },
-      { inicio: "12:00", fim: "13:00", motivo: "Almoço Londres" },
-      { inicio: "17:00", fim: "18:00", motivo: "Fechamento NY" }
-    ]
-  },
-
-  // ✅ FILTROS ULTRA-RIGOROSOS PARA BINARY OPTIONS
-  FILTROS_BINARY: {
-    SCORE_MINIMO_ENTRADA: 88,           // Só entrar com 88%+ (CRÍTICO)
-    CONFLUENCIA_MINIMA: 7,              // 7+ indicadores em consenso
-    VOLUME_MINIMO_MULTIPLICADOR: 2.5,   // Volume 2.5x maior que média
-    VOLATILIDADE_MINIMA: 0.0015,        // 0.15% movimento mínimo esperado
-    VOLATILIDADE_MAXIMA: 0.006,         // 0.6% movimento máximo (evita gaps)
-    
-    // Filtros de Momentum
-    RSI_ZONA_NEUTRA_MIN: 25,           // Evitar zona neutra RSI
-    RSI_ZONA_NEUTRA_MAX: 75,
-    MACD_HISTOGRAMA_MIN: 0.0001,       // MACD deve ter momentum claro
-    
-    // Filtros de Tendência  
-    EMA_ALINHAMENTO_MIN: 3,            // Mín 3 EMAs alinhadas
-    SUPERTREND_CONFIRMACAO: true,       // SuperTrend deve confirmar
-    
-    // Filtros de Volume e Liquidez
-    SPREAD_MAXIMO: 0.0005,             // Spread máximo 0.05%
-    ORDER_BOOK_IMBALANCE_MIN: 0.6,     // 60% desbalanceamento order book
-    
-    // Filtros Smart Money
-    SMART_MONEY_SCORE_MIN: 75,         // Smart Money deve confirmar
-    INSTITUTIONAL_FLOW_MIN: 500000,     // $500k fluxo institucional
-    
-    // Filtros de Timing
-    TEMPO_RESTANTE_MIN: 45,            // Min 45seg para expiração
-    CONFIRMACAO_MULTIPLA: true          // Deve ter confirmação de múltiplas fontes
-  },
-
-  // ✅ ESTRATÉGIAS ESPECÍFICAS POR EXPIRAÇÃO
-  ESTRATEGIAS_EXPIRACAO: {
-    "1min": {
-      nome: "SCALPING_ULTRA",
-      indicadores_principais: ["VOLUME_SPIKE", "ORDER_FLOW", "SQUEEZE_MOMENTUM"],
-      score_minimo: 92,                 // Muito rigoroso para 1min
-      confluencia_minima: 8,
-      filtros_extras: ["NO_NEWS", "HIGH_LIQUIDITY"]
+const CONFIG = {
+  // ✅ APIs PÚBLICAS 100% REAIS (SEM CHAVES)
+  API_ENDPOINTS_PUBLICAS: [
+    {
+      nome: "BINANCE_PUBLIC",
+      url: "https://api.binance.com/api/v3",
+      klines: "/klines?symbol=BTCUSDT&interval=1m&limit=200",
+      ticker: "/ticker/24hr?symbol=BTCUSDT",
+      depth: "/depth?symbol=BTCUSDT&limit=100",
+      trades: "/trades?symbol=BTCUSDT&limit=100",
+      price: "/ticker/price?symbol=BTCUSDT"
     },
-    
-    "5min": {
-      nome: "MOMENTUM_PREMIUM",         // ESTRATÉGIA PRINCIPAL
-      indicadores_principais: ["SMART_MONEY", "CVD", "SUPERTREND", "WAVE_TREND"],
-      score_minimo: 88,
-      confluencia_minima: 7,
-      filtros_extras: ["TREND_CONFIRMATION", "VOLUME_CONFIRMATION"]
+    {
+      nome: "COINBASE_PUBLIC",
+      url: "https://api.exchange.coinbase.com",
+      candles: "/products/BTC-USD/candles?granularity=60&start=" + new Date(Date.now() - 200*60*1000).toISOString(),
+      ticker: "/products/BTC-USD/ticker",
+      trades: "/products/BTC-USD/trades"
     },
-    
-    "15min": {
-      nome: "TREND_FOLLOWING",
-      indicadores_principais: ["EMA_ALIGNMENT", "MACD", "RSI_DIVERGENCE"],
-      score_minimo: 85,
-      confluencia_minima: 6,
-      filtros_extras: ["STRONG_TREND", "FAIR_VALUE_GAP"]
+    {
+      nome: "BYBIT_PUBLIC",
+      url: "https://api.bybit.com/v5/market",
+      kline: "/kline?category=spot&symbol=BTCUSDT&interval=1&limit=200",
+      ticker: "/tickers?category=spot&symbol=BTCUSDT",
+      orderbook: "/orderbook?category=spot&symbol=BTCUSDT&limit=25"
+    },
+    {
+      nome: "COINGECKO_PUBLIC",
+      url: "https://api.coingecko.com/api/v3",
+      ohlc: "/coins/bitcoin/ohlc?vs_currency=usd&days=1",
+      price: "/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_vol=true&include_24hr_change=true",
+      market: "/coins/bitcoin/market_chart?vs_currency=usd&days=1&interval=minute"
     }
+  ],
+
+  // ✅ CONFIGURAÇÕES OTIMIZADAS PARA BINARY OPTIONS
+  PERIODOS: {
+    RSI: 9,
+    STOCH: 14,
+    WILLIAMS: 14,
+    EMA_CURTA: 8,
+    EMA_MEDIA: 21,
+    EMA_LONGA: 55,
+    EMA_200: 200,
+    SMA_VOLUME: 20,
+    MACD_RAPIDA: 12,
+    MACD_LENTA: 26,
+    MACD_SINAL: 9,
+    VELAS_CONFIRMACAO: 3,
+    ANALISE_LATERAL: 30,
+    VWAP: 20,
+    ATR: 14,
+    SUPERTREND: 10
   },
 
-  // ✅ PESOS ESPECÍFICOS PARA BINARY OPTIONS
-  PESOS_BINARY: {
-    // ULTRA IMPORTANTES para Binary (peso máximo)
-    TIMING_PRECISION: 3.5,             // Precisão de timing
-    VOLUME_SPIKE: 3.2,                 // Spike de volume
-    ORDER_FLOW_IMBALANCE: 3.0,         // Desbalanceamento order flow
-    SMART_MONEY_ENTRY: 2.9,            // Entrada Smart Money
+  LIMIARES: {
+    SCORE_ULTRA_ALTO: 95,
+    SCORE_MUITO_ALTO: 90,
+    SCORE_ALTO: 85,
+    SCORE_MEDIO: 75,
     
-    // MUITO IMPORTANTES (peso alto)
-    SQUEEZE_MOMENTUM: 2.7,             // Squeeze momentum
-    CVD_DIVERGENCE: 2.6,               // Divergência CVD
-    WAVE_TREND_SIGNAL: 2.5,            // Sinal Wave Trend
-    SUPERTREND_DIRECTION: 2.4,         // Direção SuperTrend
+    RSI_OVERBOUGHT: 70,
+    RSI_OVERSOLD: 30,
+    STOCH_OVERBOUGHT: 80,
+    STOCH_OVERSOLD: 20,
+    WILLIAMS_OVERBOUGHT: -20,
+    WILLIAMS_OVERSOLD: -80,
     
-    // IMPORTANTES (peso médio-alto)
-    MACD_MOMENTUM: 2.2,                // Momentum MACD
-    RSI_EXTREMES: 2.1,                 // RSI em extremos
-    EMA_CONFLUENCE: 2.0,               // Confluência EMAs
-    VWAP_DEVIATION: 1.9,               // Desvio VWAP
+    VOLUME_ALTO: 2.5,
+    VOLUME_EXTREMO: 4.0,
     
-    // CONFIRMAÇÃO (peso médio)
-    STOCH_CONFIRMATION: 1.6,           // Confirmação Stochastic
-    WILLIAMS_CONFIRMATION: 1.4,        // Confirmação Williams
-    VOLUME_CONFIRMATION: 1.8,          // Confirmação volume
-    
-    // FILTROS E PENALIDADES
-    LOW_VOLUME_PENALTY: -3.0,          // Penalidade volume baixo
-    SIDEWAYS_MARKET_PENALTY: -2.5,     // Penalidade mercado lateral
-    NEWS_EVENT_PENALTY: -2.0,          // Penalidade eventos de notícias
-    HIGH_SPREAD_PENALTY: -1.5,         // Penalidade spread alto
-    
-    // MULTIPLICADORES DE SESSÃO
-    LONDON_NY_OVERLAP: 1.4,            // Multiplicador overlap
-    HIGH_LIQUIDITY_SESSION: 1.3,       // Sessão alta liquidez
-    PERFECT_TIMING: 1.2                 // Timing perfeito
+    VARIACAO_LATERAL: 1.2,
+    VWAP_DESVIO: 0.02,
+    ATR_LIMIAR: 0.03,
+    SUPERTREND_SENSIBILIDADE: 2.5
+  },
+
+  PESOS: {
+    RSI: 1.8,
+    MACD: 2.2,
+    TENDENCIA: 2.5,
+    VOLUME: 2.0,
+    STOCH: 1.2,
+    WILLIAMS: 1.1,
+    CONFIRMACAO: 1.8,
+    LATERALIDADE: 1.5,
+    VWAP: 1.6,
+    VOLATILIDADE: 1.6,
+    SUPERTREND: 2.3,
+    VOLUME_PROFILE: 1.5,
+    DIVERGENCIA: 2.0,
+    LIQUIDITY: 1.9,
+    FAIR_VALUE: 1.8,
+    INSTITUTIONAL: 2.1
+  },
+
+  RISCO: {
+    SCORE_MINIMO_ENTRADA: 85,
+    CONFLUENCIA_MINIMA: 5,
+    VOLUME_MINIMO_MULTIPLICADOR: 2.0
+  },
+
+  BINARY_OPTIONS: {
+    HORARIOS_IDEAIS: {
+      LONDRES_NY: { inicio: 13, fim: 16, multiplicador: 1.4 },
+      NY_ABERTURA: { inicio: 14, fim: 17, multiplicador: 1.3 },
+      EVITAR: [
+        { inicio: 22, fim: 6, motivo: "Baixa liquidez asiática" },
+        { inicio: 12, fim: 13, motivo: "Almoço Londres" }
+      ]
+    },
+    EXPIRACAO_RECOMENDADA: "5min",
+    TIMEFRAME_ANALISE: "1min"
   }
 };
 
-// ✅ FUNÇÃO DE ANÁLISE ESPECÍFICA PARA BINARY OPTIONS
-function analisarSinalBinaryOptions(dados, fundingRate, openInterest, orderBook, expiracao = "5min") {
+// =============================================
+// FUNÇÕES DE DADOS REAIS - APIs PÚBLICAS
+// =============================================
+
+// ✅ BINANCE API PÚBLICA (SEM CHAVE)
+async function obterDadosBinancePublica() {
   try {
-    const estrategia = CONFIG_BINARY_OPTIONS.ESTRATEGIAS_EXPIRACAO[expiracao];
-    const agora = new Date();
-    const hora = agora.getHours();
-    const minuto = agora.getMinutes();
-    const segundo = agora.getSeconds();
+    const endpoint = CONFIG.API_ENDPOINTS_PUBLICAS[0];
+    const url = `${endpoint.url}${endpoint.klines}`;
     
-    // ✅ VERIFICAR HORÁRIO IDEAL
-    const horarioIdeal = verificarHorarioIdeal(hora, minuto);
-    if (!horarioIdeal.permitido) {
-      return {
-        sinal: "ESPERAR",
-        score: 0,
-        motivo: `Horário não ideal: ${horarioIdeal.motivo}`,
-        proximoHorario: horarioIdeal.proximo
-      };
+    console.log("📡 Conectando Binance API Pública...");
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`Binance API falhou: ${response.status}`);
     }
     
-    // ✅ VERIFICAR TIMING DE ENTRADA
-    const tempoRestante = 60 - segundo; // Segundos até próximo minuto
-    if (tempoRestante < CONFIG_BINARY_OPTIONS.FILTROS_BINARY.TEMPO_RESTANTE_MIN) {
-      return {
-        sinal: "AGUARDAR",
-        score: 0,
-        motivo: `Aguardar próximo ciclo (${tempoRestante}s restantes)`,
-        tempoEspera: 60 - tempoRestante
-      };
+    const data = await response.json();
+    
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error("Binance: dados inválidos");
     }
     
-    // ✅ EXTRAIR DADOS
-    const closes = dados.map(d => d.close);
-    const highs = dados.map(d => d.high);
-    const lows = dados.map(d => d.low);
-    const volumes = dados.map(d => d.volume);
-    const precoAtual = closes[closes.length - 1];
+    console.log(`✅ Binance Pública: ${data.length} velas`);
     
-    // ✅ CALCULAR INDICADORES PREMIUM
-    const indicadores = calcularIndicadoresPremium(dados);
+    return data.map(kline => ({
+      time: new Date(kline[0]).toISOString(),
+      open: parseFloat(kline[1]),
+      high: parseFloat(kline[2]),
+      low: parseFloat(kline[3]),
+      close: parseFloat(kline[4]),
+      volume: parseFloat(kline[5]),
+      timestamp: kline[0],
+      trades: parseInt(kline[8]),
+      takerBuyVolume: parseFloat(kline[9]),
+      source: "BINANCE_PUBLIC"
+    }));
     
-    // ✅ ANÁLISE DE VOLUME (CRÍTICO PARA BINARY)
-    const volumeAnalise = analisarVolumeParaBinary(volumes, dados);
-    if (!volumeAnalise.adequado) {
-      return {
-        sinal: "ESPERAR",
-        score: 0,
-        motivo: `Volume inadequado: ${volumeAnalise.motivo}`,
-        volumeAtual: volumeAnalise.volumeAtual,
-        volumeNecessario: volumeAnalise.volumeNecessario
-      };
+  } catch (e) {
+    console.error("❌ Erro Binance Pública:", e.message);
+    throw e;
+  }
+}
+
+// ✅ COINBASE API PÚBLICA (SEM CHAVE)
+async function obterDadosCoinbasePublica() {
+  try {
+    const endpoint = CONFIG.API_ENDPOINTS_PUBLICAS[1];
+    const startTime = new Date(Date.now() - 200*60*1000).toISOString();
+    const url = `${endpoint.url}/products/BTC-USD/candles?granularity=60&start=${startTime}`;
+    
+    console.log("📡 Conectando Coinbase API Pública...");
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`Coinbase API falhou: ${response.status}`);
     }
     
-    // ✅ ANÁLISE SMART MONEY
-    const smartMoney = analisarSmartMoneyBinary(dados, orderBook);
+    const data = await response.json();
     
-    // ✅ ANÁLISE DE MOMENTUM
-    const momentum = analisarMomentumBinary(indicadores, dados);
-    
-    // ✅ SISTEMA DE SCORE ULTRA-RIGOROSO
-    let score = 50; // Base neutra
-    let confirmacoes = [];
-    let alertas = [];
-    
-    // 1. SMART MONEY ANALYSIS (35% do score)
-    if (smartMoney.fluxoInstitucional > CONFIG_BINARY_OPTIONS.FILTROS_BINARY.INSTITUTIONAL_FLOW_MIN) {
-      score += 15 * CONFIG_BINARY_OPTIONS.PESOS_BINARY.SMART_MONEY_ENTRY;
-      confirmacoes.push("💰 Fluxo Institucional ALTO");
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error("Coinbase: dados inválidos");
     }
     
-    if (smartMoney.orderBookImbalance > CONFIG_BINARY_OPTIONS.FILTROS_BINARY.ORDER_BOOK_IMBALANCE_MIN) {
-      score += 12 * CONFIG_BINARY_OPTIONS.PESOS_BINARY.ORDER_FLOW_IMBALANCE;
-      confirmacoes.push("📊 Order Book Desbalanceado");
+    console.log(`✅ Coinbase Pública: ${data.length} velas`);
+    
+    return data.map(candle => ({
+      time: new Date(candle[0] * 1000).toISOString(),
+      low: parseFloat(candle[1]),
+      high: parseFloat(candle[2]),
+      open: parseFloat(candle[3]),
+      close: parseFloat(candle[4]),
+      volume: parseFloat(candle[5]),
+      timestamp: candle[0] * 1000,
+      source: "COINBASE_PUBLIC"
+    })).reverse().slice(-200);
+    
+  } catch (e) {
+    console.error("❌ Erro Coinbase Pública:", e.message);
+    throw e;
+  }
+}
+
+// ✅ BYBIT API PÚBLICA (SEM CHAVE)
+async function obterDadosBybitPublica() {
+  try {
+    const endpoint = CONFIG.API_ENDPOINTS_PUBLICAS[2];
+    const url = `${endpoint.url}${endpoint.kline}`;
+    
+    console.log("📡 Conectando Bybit API Pública...");
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`Bybit API falhou: ${response.status}`);
     }
     
-    if (smartMoney.fairValueGap.gap) {
-      score += 10 * CONFIG_BINARY_OPTIONS.PESOS_BINARY.SMART_MONEY_ENTRY;
-      confirmacoes.push(`⚡ Fair Value Gap ${smartMoney.fairValueGap.direcao}`);
+    const data = await response.json();
+    
+    if (!data.result || !Array.isArray(data.result.list)) {
+      throw new Error("Bybit: dados inválidos");
     }
     
-    // 2. MOMENTUM ANALYSIS (30% do score)
-    if (momentum.squeeze.ativo && momentum.squeeze.momentum > 0.001) {
-      score += 14 * CONFIG_BINARY_OPTIONS.PESOS_BINARY.SQUEEZE_MOMENTUM;
-      confirmacoes.push("🚀 Squeeze Momentum ATIVO");
+    const klines = data.result.list;
+    console.log(`✅ Bybit Pública: ${klines.length} velas`);
+    
+    return klines.map(kline => ({
+      time: new Date(parseInt(kline[0])).toISOString(),
+      open: parseFloat(kline[1]),
+      high: parseFloat(kline[2]),
+      low: parseFloat(kline[3]),
+      close: parseFloat(kline[4]),
+      volume: parseFloat(kline[5]),
+      timestamp: parseInt(kline[0]),
+      source: "BYBIT_PUBLIC"
+    })).reverse();
+    
+  } catch (e) {
+    console.error("❌ Erro Bybit Pública:", e.message);
+    throw e;
+  }
+}
+
+// ✅ COINGECKO API PÚBLICA (CORRIGIDA)
+async function obterDadosCoingeckoPublica() {
+  try {
+    const endpoint = CONFIG.API_ENDPOINTS_PUBLICAS[3];
+    const url = `${endpoint.url}${endpoint.ohlc}`;
+    
+    console.log("📡 Conectando CoinGecko API Pública...");
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`CoinGecko API falhou: ${response.status}`);
     }
     
-    if (Math.abs(momentum.waveTrend.wt1) > 50) {
-      const direcao = momentum.waveTrend.wt1 > 0 ? "CALL" : "PUT";
-      score += 12 * CONFIG_BINARY_OPTIONS.PESOS_BINARY.WAVE_TREND_SIGNAL;
-      confirmacoes.push(`📈 Wave Trend: ${direcao}`);
+    const data = await response.json();
+    
+    if (!Array.isArray(data)) {
+      throw new Error("CoinGecko: dados inválidos");
     }
     
-    if (momentum.cvd.divergencia) {
-      score += 10 * CONFIG_BINARY_OPTIONS.PESOS_BINARY.CVD_DIVERGENCE;
-      confirmacoes.push("🔄 CVD Divergência");
-    }
+    console.log(`✅ CoinGecko Pública: ${data.length} pontos`);
     
-    // 3. TREND ANALYSIS (20% do score)
-    const trendScore = analisarTendenciaBinary(indicadores);
-    score += trendScore.score;
-    confirmacoes.push(...trendScore.confirmacoes);
+    return data.map(item => ({
+      time: new Date(item[0]).toISOString(),
+      open: parseFloat(item[1]),
+      high: parseFloat(item[2]),
+      low: parseFloat(item[3]),
+      close: parseFloat(item[4]),
+      volume: 1000,
+      timestamp: item[0],
+      source: "COINGECKO_PUBLIC"
+    })).slice(-200);
     
-    // 4. VOLUME CONFIRMATION (15% do score)
-    if (volumeAnalise.spike > 3.0) {
-      score += 8 * CONFIG_BINARY_OPTIONS.PESOS_BINARY.VOLUME_SPIKE;
-      confirmacoes.push(`📈 Volume Spike: ${volumeAnalise.spike.toFixed(1)}x`);
-    }
+  } catch (e) {
+    console.error("❌ Erro CoinGecko Pública:", e.message);
+    throw e;
+  }
+}
+
+// ✅ OBTER TICKER PÚBLICO (PREÇO ATUAL)
+async function obterTickerPublico() {
+  try {
+    const endpoint = CONFIG.API_ENDPOINTS_PUBLICAS[0];
+    const url = `${endpoint.url}${endpoint.ticker}`;
     
-    // ✅ APLICAR FILTROS ULTRA-RIGOROSOS
-    const filtros = aplicarFiltrosBinary(indicadores, dados, orderBook);
-    score += filtros.scoreAjuste;
-    alertas.push(...filtros.alertas);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Ticker falhou: ${response.status}`);
     
-    // ✅ MULTIPLICADORES DE SESSÃO
-    const multiplicadorSessao = obterMultiplicadorSessao(hora);
-    score *= multiplicadorSessao.multiplicador;
-    if (multiplicadorSessao.multiplicador > 1) {
-      confirmacoes.push(`⏰ ${multiplicadorSessao.nome}`);
-    }
-    
-    // ✅ VERIFICAR CONFLUÊNCIA MÍNIMA
-    if (confirmacoes.length < estrategia.confluencia_minima) {
-      return {
-        sinal: "ESPERAR",
-        score: Math.round(score),
-        motivo: `Confluência insuficiente: ${confirmacoes.length}/${estrategia.confluencia_minima}`,
-        confirmacoes,
-        alertas,
-        precisaConfirmacoes: estrategia.confluencia_minima - confirmacoes.length
-      };
-    }
-    
-    // ✅ VERIFICAR SCORE MÍNIMO
-    const scoreFinal = Math.min(100, Math.max(0, Math.round(score)));
-    if (scoreFinal < estrategia.score_minimo) {
-      return {
-        sinal: "ESPERAR",
-        score: scoreFinal,
-        motivo: `Score insuficiente: ${scoreFinal}% < ${estrategia.score_minimo}%`,
-        confirmacoes,
-        alertas,
-        scoreNecessario: estrategia.score_minimo
-      };
-    }
-    
-    // ✅ DETERMINAR DIREÇÃO DO SINAL
-    let direcaoCall = 0;
-    let direcaoPut = 0;
-    
-    // Análise direcional baseada nos indicadores principais
-    if (smartMoney.fluxoInstitucional > 0) direcaoCall++;
-    else direcaoPut++;
-    
-    if (momentum.waveTrend.wt1 < -50) direcaoCall++;
-    else if (momentum.waveTrend.wt1 > 50) direcaoPut++;
-    
-    if (indicadores.rsi < 30) direcaoCall++;
-    else if (indicadores.rsi > 70) direcaoPut++;
-    
-    if (indicadores.superTrend.direcao === 1) direcaoCall++;
-    else if (indicadores.superTrend.direcao === -1) direcaoPut++;
-    
-    if (indicadores.macd.histograma > 0) direcaoCall++;
-    else direcaoPut++;
-    
-    // Determinar sinal final
-    let sinalFinal;
-    if (direcaoCall > direcaoPut) {
-      sinalFinal = "CALL";
-    } else if (direcaoPut > direcaoCall) {
-      sinalFinal = "PUT";
-    } else {
-      sinalFinal = "ESPERAR"; // Empate = não entrar
-    }
-    
-    // ✅ CALCULAR PROBABILIDADE DE SUCESSO
-    const probabilidade = calcularProbabilidadeBinary(scoreFinal, confirmacoes.length, estrategia);
-    
-    // ✅ INFORMAÇÕES DE ENTRADA
-    const infoEntrada = {
-      preco: precoAtual,
-      expiracao: expiracao,
-      horario: agora.toLocaleTimeString("pt-BR"),
-      volume: volumeAnalise.volumeAtual.toFixed(0),
-      spread: orderBook.spread.toFixed(6),
-      probabilidade: probabilidade.toFixed(1)
-    };
+    const data = await response.json();
     
     return {
-      sinal: sinalFinal,
-      score: scoreFinal,
-      probabilidade: probabilidade,
-      confirmacoes,
-      alertas,
-      infoEntrada,
-      estrategia: estrategia.nome,
-      detalhes: {
-        smartMoney,
-        momentum,
-        volumeAnalise,
-        indicadores: {
-          rsi: indicadores.rsi.toFixed(1),
-          macd: indicadores.macd.histograma.toFixed(4),
-          superTrend: indicadores.superTrend.direcao === 1 ? "BULL" : "BEAR"
+      symbol: data.symbol,
+      price: parseFloat(data.lastPrice),
+      change: parseFloat(data.priceChange),
+      changePercent: parseFloat(data.priceChangePercent),
+      volume: parseFloat(data.volume),
+      quoteVolume: parseFloat(data.quoteVolume),
+      trades: parseInt(data.count)
+    };
+    
+  } catch (e) {
+    console.error("❌ Erro Ticker Público:", e.message);
+    throw e;
+  }
+}
+
+// ✅ OBTER ORDER BOOK PÚBLICO
+async function obterOrderBookPublico() {
+  try {
+    const endpoint = CONFIG.API_ENDPOINTS_PUBLICAS[0];
+    const url = `${endpoint.url}${endpoint.depth}`;
+    
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Order Book falhou: ${response.status}`);
+    
+    const data = await response.json();
+    
+    const bids = data.bids.slice(0, 10);
+    const asks = data.asks.slice(0, 10);
+    
+    const bidVolume = bids.reduce((sum, bid) => sum + (parseFloat(bid[0]) * parseFloat(bid[1])), 0);
+    const askVolume = asks.reduce((sum, ask) => sum + (parseFloat(ask[0]) * parseFloat(ask[1])), 0);
+    const totalVolume = bidVolume + askVolume;
+    
+    const buyPressure = totalVolume > 0 ? bidVolume / totalVolume : 0.5;
+    const spread = parseFloat(asks[0][0]) - parseFloat(bids[0][0]);
+    const spreadPercent = (spread / parseFloat(bids[0][0])) * 100;
+    
+    return {
+      bidVolume,
+      askVolume,
+      buyPressure,
+      sellPressure: 1 - buyPressure,
+      spread,
+      spreadPercent,
+      bestBid: parseFloat(bids[0][0]),
+      bestAsk: parseFloat(asks[0][0]),
+      liquidityUSD: totalVolume
+    };
+    
+  } catch (e) {
+    console.error("❌ Erro Order Book Público:", e.message);
+    return { bidVolume: 0, askVolume: 0, buyPressure: 0.5, sellPressure: 0.5, spread: 0, spreadPercent: 0, liquidityUSD: 0 };
+  }
+}
+
+// ✅ FUNÇÃO PRINCIPAL - APIS PÚBLICAS (OTIMIZADA)
+async function obterDadosReaisPublicos() {
+  console.log("🚀 Coletando dados de APIs PÚBLICAS...");
+  
+  const apis = [
+    { nome: "BINANCE", func: obterDadosBinancePublica },
+    { nome: "COINBASE", func: obterDadosCoinbasePublica },
+    { nome: "BYBIT", func: obterDadosBybitPublica },
+    { nome: "COINGECKO", func: obterDadosCoingeckoPublica }
+  ];
+  
+  // Tentar múltiplas APIs públicas em paralelo
+  const promises = apis.map(api => 
+    api.func()
+      .then(dados => {
+        if (!dados || dados.length < 50) {
+          throw new Error(`${api.nome}: dados insuficientes`);
         }
-      }
-    };
-    
-  } catch (e) {
-    console.error("Erro na análise Binary Options:", e);
-    return {
-      sinal: "ERRO",
-      score: 0,
-      motivo: `Erro técnico: ${e.message}`,
-      erro: e
-    };
-  }
-}
-
-// ✅ FUNÇÃO PARA VERIFICAR HORÁRIO IDEAL
-function verificarHorarioIdeal(hora, minuto) {
-  const horarios = CONFIG_BINARY_OPTIONS.HORARIOS_IDEAIS;
-  
-  // Verificar horários perigosos
-  for (const perigoso of horarios.HORARIOS_PERIGOSOS) {
-    const [inicioH, inicioM] = perigoso.inicio.split(':').map(Number);
-    const [fimH, fimM] = perigoso.fim.split(':').map(Number);
-    
-    if ((hora > inicioH || (hora === inicioH && minuto >= inicioM)) &&
-        (hora < fimH || (hora === fimH && minuto <= fimM))) {
-      return {
-        permitido: false,
-        motivo: perigoso.motivo,
-        proximo: perigoso.fim
-      };
-    }
-  }
-  
-  // Verificar horários ideais
-  if ((hora >= 8 && hora <= 10) || (hora >= 13 && hora <= 16) || (hora >= 14 && hora <= 16)) {
-    return { permitido: true, ideal: true };
-  }
-  
-  return { permitido: true, ideal: false };
-}
-
-// ✅ FUNÇÃO PARA ANALISAR VOLUME ESPECÍFICO PARA BINARY
-function analisarVolumeParaBinary(volumes, dados) {
-  const volumeAtual = volumes[volumes.length - 1];
-  const volumeMedia = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const volumeSpike = volumeAtual / volumeMedia;
-  
-  const adequado = volumeSpike >= CONFIG_BINARY_OPTIONS.FILTROS_BINARY.VOLUME_MINIMO_MULTIPLICADOR;
-  
-  return {
-    adequado,
-    volumeAtual,
-    volumeMedia,
-    spike: volumeSpike,
-    motivo: adequado ? "Volume adequado" : `Volume baixo: ${volumeSpike.toFixed(1)}x (necessário: ${CONFIG_BINARY_OPTIONS.FILTROS_BINARY.VOLUME_MINIMO_MULTIPLICADOR}x)`,
-    volumeNecessario: volumeMedia * CONFIG_BINARY_OPTIONS.FILTROS_BINARY.VOLUME_MINIMO_MULTIPLICADOR
-  };
-}
-
-// ✅ FUNÇÃO PRINCIPAL ADAPTADA PARA BINARY OPTIONS
-async function analisarMercadoBinaryOptions(expiracao = "5min") {
-  if (state.leituraEmAndamento || !state.marketOpen) return;
-  state.leituraEmAndamento = true;
+        
+        // Validar dados
+        const ultimaVela = dados[dados.length - 1];
+        if (!ultimaVela.close || ultimaVela.close < 10000 || ultimaVela.close > 200000) {
+          throw new Error(`${api.nome}: preço inválido $${ultimaVela.close}`);
+        }
+        
+        console.log(`✅ ${api.nome}: ${dados.length} velas, Preço: $${ultimaVela.close.toFixed(2)}`);
+        return dados;
+      })
+      .catch(e => {
+        console.warn(`⚠️ ${api.nome} falhou:`, e.message);
+        return Promise.reject(e);
+      })
+  );
   
   try {
-    console.log(`🎯 Análise Binary Options (${expiracao})...`);
-    
-    // Obter dados reais
-    const [dados, fundingRate, openInterest, orderBook] = await Promise.all([
-      obterDadosCrypto100Real(),
-      obterFundingRateReal(),
-      obterOpenInterestReal(),
-      obterOrderBookReal()
-    ]);
-    
-    // Análise específica para Binary Options
-    const resultado = analisarSinalBinaryOptions(dados, fundingRate, openInterest, orderBook, expiracao);
-    
-    // Atualizar interface com informações específicas para Binary
-    atualizarInterfaceBinary(resultado);
-    
-    // Log específico para Binary Options
-    console.log("🎯 Resultado Binary Options:", {
-      sinal: resultado.sinal,
-      score: resultado.score,
-      probabilidade: resultado.probabilidade,
-      confirmacoes: resultado.confirmacoes?.length || 0,
-      expiracao: expiracao
-    });
-    
-    state.ultimoSinal = resultado.sinal;
-    state.ultimoScore = resultado.score;
-    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
-    
-    state.tentativasErro = 0;
-    
+    const dados = await Promise.any(promises);
+    return dados;
   } catch (e) {
-    console.error("❌ Erro análise Binary:", e);
-    state.tentativasErro++;
-  } finally {
-    state.leituraEmAndamento = false;
+    throw new Error("❌ Todas as APIs públicas falharam!");
   }
 }
 
-// ✅ INTERFACE ESPECÍFICA PARA BINARY OPTIONS
-function atualizarInterfaceBinary(resultado) {
-  // Atualizar comando principal
+// =============================================
+// INDICADORES TÉCNICOS
+// =============================================
+
+function formatarTimer(segundos) {
+  return `0:${segundos.toString().padStart(2, '0')}`;
+}
+
+function atualizarRelogio() {
+  const elementoHora = document.getElementById("hora");
+  if (elementoHora) {
+    elementoHora.textContent = new Date().toLocaleTimeString("pt-BR");
+    state.marketOpen = true;
+  }
+}
+
+function atualizarInterface(sinal, score) {
   const comandoElement = document.getElementById("comando");
   if (comandoElement) {
     let emoji = "";
-    let classe = resultado.sinal.toLowerCase();
+    let classe = sinal.toLowerCase();
     
-    if (resultado.score >= 92) {
-      emoji = resultado.sinal === "CALL" ? " 🚀💎" : resultado.sinal === "PUT" ? " ⚡💎" : " ⏳";
+    if (score >= CONFIG.LIMIARES.SCORE_ULTRA_ALTO) {
+      emoji = sinal === "CALL" ? " 🚀💎" : sinal === "PUT" ? " ⚡💎" : " ⏳";
       classe += " ultra-alto";
-    } else if (resultado.score >= 88) {
-      emoji = resultado.sinal === "CALL" ? " 🚀" : resultado.sinal === "PUT" ? " ⚡" : " ⏳";
+    } else if (score >= CONFIG.LIMIARES.SCORE_MUITO_ALTO) {
+      emoji = sinal === "CALL" ? " 🚀" : sinal === "PUT" ? " ⚡" : " ⏳";
       classe += " muito-alto";
-    } else if (resultado.score >= 85) {
-      emoji = resultado.sinal === "CALL" ? " 📈" : resultado.sinal === "PUT" ? " 📉" : " ✋";
+    } else if (score >= CONFIG.LIMIARES.SCORE_ALTO) {
+      emoji = sinal === "CALL" ? " 📈" : sinal === "PUT" ? " 📉" : " ✋";
       classe += " alto";
+    } else if (score >= CONFIG.LIMIARES.SCORE_MEDIO) {
+      emoji = sinal === "CALL" ? " ↗️" : sinal === "PUT" ? " ↘️" : " ➡️";
+      classe += " medio";
     } else {
       emoji = " ⚠️";
       classe += " baixo";
     }
     
-    comandoElement.textContent = resultado.sinal + emoji;
+    comandoElement.textContent = sinal + emoji;
     comandoElement.className = classe;
   }
   
-  // Atualizar score com probabilidade
   const scoreElement = document.getElementById("score");
   if (scoreElement) {
-    const texto = resultado.probabilidade ? 
-      `Score: ${resultado.score}% | Prob: ${resultado.probabilidade}%` : 
-      `Score: ${resultado.score}%`;
-    scoreElement.textContent = texto;
+    scoreElement.textContent = `Binary Options: ${score}%`;
     
-    if (resultado.score >= 92) {
+    if (score >= CONFIG.LIMIARES.SCORE_ULTRA_ALTO) {
       scoreElement.style.color = '#00ff00';
       scoreElement.style.fontWeight = 'bold';
       scoreElement.style.textShadow = '0 0 10px #00ff00';
-    } else if (resultado.score >= 88) {
+    } else if (score >= CONFIG.LIMIARES.SCORE_MUITO_ALTO) {
       scoreElement.style.color = '#7fff00';
       scoreElement.style.fontWeight = 'bold';
-    } else if (resultado.score >= 85) {
+    } else if (score >= CONFIG.LIMIARES.SCORE_ALTO) {
       scoreElement.style.color = '#ffff00';
+      scoreElement.style.fontWeight = 'bold';
     } else {
       scoreElement.style.color = '#ff8c00';
     }
   }
-  
-  // Adicionar informações específicas de Binary Options
-  const infoBinaryElement = document.getElementById("info-binary") || criarElementoInfoBinary();
-  if (infoBinaryElement && resultado.infoEntrada) {
-    infoBinaryElement.innerHTML = `
-      <div style="background: #1a1a1a; padding: 10px; border-radius: 5px; margin: 10px 0;">
-        <h4>📊 Info Binary Options:</h4>
-        <p>💰 Preço: $${resultado.infoEntrada.preco}</p>
-        <p>⏰ Expiração: ${resultado.infoEntrada.expiracao}</p>
-        <p>📈 Volume: ${resultado.infoEntrada.volume}</p>
-        <p>📊 Spread: ${resultado.infoEntrada.spread}</p>
-        <p>🎯 Estratégia: ${resultado.estrategia}</p>
-        ${resultado.motivo ? `<p>⚠️ ${resultado.motivo}</p>` : ''}
-      </div>
-    `;
-  }
-  
-  // Mostrar confirmações
-  const confirmacoesElement = document.getElementById("confirmacoes") || criarElementoConfirmacoes();
-  if (confirmacoesElement && resultado.confirmacoes) {
-    confirmacoesElement.innerHTML = `
-      <div style="background: #0a2a0a; padding: 10px; border-radius: 5px; margin: 10px 0;">
-        <h4>✅ Confirmações (${resultado.confirmacoes.length}):</h4>
-        ${resultado.confirmacoes.map(conf => `<p style="color: #00ff00;">• ${conf}</p>`).join('')}
-      </div>
-    `;
-  }
 }
 
-function criarElementoInfoBinary() {
-  const elemento = document.createElement('div');
-  elemento.id = 'info-binary';
-  document.body.appendChild(elemento);
-  return elemento;
-}
+const calcularMedia = {
+  simples: (dados, periodo) => {
+    if (!Array.isArray(dados) || dados.length < periodo) return 0;
+    const slice = dados.slice(-periodo);
+    return slice.reduce((a, b) => a + b, 0) / periodo;
+  },
 
-function criarElementoConfirmacoes() {
-  const elemento = document.createElement('div');
-  elemento.id = 'confirmacoes';
-  document.body.appendChild(elemento);
-  return elemento;
-}
-
-// ✅ INICIALIZAÇÃO ESPECÍFICA PARA BINARY OPTIONS
-function iniciarSistemaBinaryOptions(expiracao = "5min") {
-  console.log("🎯 Iniciando Sistema Binary Options PREMIUM...");
-  
-  // Conectar WebSocket
-  conectarWebSocketReal();
-  
-  // Análise inicial
-  analisarMercadoBinaryOptions(expiracao);
-  
-  // Timer específico para Binary (mais frequente)
-  setInterval(() => {
-    if (!state.leituraEmAndamento) {
-      analisarMercadoBinaryOptions(expiracao);
+  exponencial: (dados, periodo) => {
+    if (!Array.isArray(dados) || dados.length < periodo) return [0];
+    
+    const k = 2 / (periodo + 1);
+    let ema = calcularMedia.simples(dados.slice(0, periodo), periodo);
+    const emaArray = [ema];
+    
+    for (let i = periodo; i < dados.length; i++) {
+      ema = dados[i] * k + ema * (1 - k);
+      emaArray.push(ema);
     }
-  }, 30000); // A cada 30 segundos
+    
+    return emaArray;
+  }
+};
+
+function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
+  if (!Array.isArray(closes) || closes.length < periodo + 1) return 50;
   
-  console.log(`✅ Sistema Binary Options iniciado (${expiracao})!`);
-  console.log("🎯 Meta: 85-90% de assertividade");
-  console.log("💎 Sinais apenas com alta confluência");
+  let gains = 0, losses = 0;
+  
+  for (let i = 1; i <= periodo; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) gains += diff;
+    else losses += Math.abs(diff);
+  }
+
+  let avgGain = gains / periodo;
+  let avgLoss = Math.max(losses / periodo, 1e-8);
+
+  for (let i = periodo + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? Math.abs(diff) : 0;
+    
+    avgGain = (avgGain * (periodo - 1) + gain) / periodo;
+    avgLoss = Math.max((avgLoss * (periodo - 1) + loss) / periodo, 1e-8);
+  }
+
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
 }
 
-// Auto-inicialização para Binary Options
-if (document.readyState === "complete") {
-  iniciarSistemaBinaryOptions("5min"); // Expiração padrão 5min
-} else {
-  document.addEventListener("DOMContentLoaded", () => iniciarSistemaBinaryOptions("5min"));
+function calcularStochastic(highs, lows, closes, periodo = CONFIG.PERIODOS.STOCH) {
+  try {
+    if (!Array.isArray(closes) || closes.length < periodo) return { k: 50, d: 50 };
+    
+    const kValues = [];
+    for (let i = periodo-1; i < closes.length; i++) {
+      const sliceHigh = highs.slice(i-periodo+1, i+1);
+      const sliceLow = lows.slice(i-periodo+1, i+1);
+      const highestHigh = Math.max(...sliceHigh);
+      const lowestLow = Math.min(...sliceLow);
+      const range = highestHigh - lowestLow;
+      kValues.push(range > 0 ? ((closes[i] - lowestLow) / range) * 100 : 50);
+    }
+    
+    const dValues = kValues.length >= 3 ? calcularMedia.simples(kValues.slice(-3), 3) : 50;
+    return {
+      k: kValues[kValues.length-1] || 50,
+      d: dValues || 50
+    };
+  } catch (e) {
+    return { k: 50, d: 50 };
+  }
 }
+
+function calcularWilliams(highs, lows, closes, periodo = CONFIG.PERIODOS.WILLIAMS) {
+  try {
+    if (!Array.isArray(closes) || closes.length < periodo) return -50;
+    
+    const sliceHigh = highs.slice(-periodo);
+    const sliceLow = lows.slice(-periodo);
+    const highestHigh = Math.max(...sliceHigh);
+    const lowestLow = Math.min(...sliceLow);
+    const range = highestHigh - lowestLow;
+    
+    return range > 0 ? ((highestHigh - closes[closes.length-1]) / range) * -100 : -50;
+  } catch (e) {
+    return -50;
+  }
+}
+
+function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA, 
+                    lenta = CONFIG.PERIODOS.MACD_LENTA, 
+                    sinal = CONFIG.PERIODOS.MACD_SINAL) {
+  try {
+    if (!Array.isArray(closes) || closes.length < lenta + sinal) {
+      return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+    }
+
+    const emaRapida = calcularMedia.exponencial(closes, rapida);
+    const emaLenta = calcularMedia.exponencial(closes, lenta);
+    
+    const startIdx = lenta - rapida;
+    const macdLinha = emaRapida.slice(startIdx).map((val, idx) => val - emaLenta[idx]);
+    const sinalLinha = calcularMedia.exponencial(macdLinha, sinal);
+    
+    const ultimoMACD = macdLinha[macdLinha.length - 1] || 0;
+    const ultimoSinal = sinalLinha[sinalLinha.length - 1] || 0;
+    
+    return {
+      histograma: ultimoMACD - ultimoSinal,
+      macdLinha: ultimoMACD,
+      sinalLinha: ultimoSinal
+    };
+  } catch (e) {
+    return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+  }
+}
+
+function calcularVWAP(dados, periodo = CONFIG.PERIODOS.VWAP) {
+  try {
+    if (!Array.isArray(dados) || dados.length < periodo) return 0;
+    
+    const slice = dados.slice(-periodo);
+    let typicalPriceSum = 0;
+    let volumeSum = 0;
+    
+    for (const vela of slice) {
+      if (!vela || !vela.volume) continue;
+      const typicalPrice = (vela.high + vela.low + vela.close) / 3;
+      typicalPriceSum += typicalPrice * vela.volume;
+      volumeSum += vela.volume;
+    }
+    
+    return volumeSum > 0 ? typicalPriceSum / volumeSum : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function calcularATR(dados, periodo = CONFIG.PERIODOS.ATR) {
+  try {
+    if (!Array.isArray(dados) || dados.length < periodo + 1) return 0;
+    
+    const trValues = [];
+    for (let i = 1; i < dados.length; i++) {
+      const tr = Math.max(
+        dados[i].high - dados[i].low,
+        Math.abs(dados[i].high - dados[i-1].close),
+        Math.abs(dados[i].low - dados[i-1].close)
+      );
+      trValues.push(tr);
+    }
+    
+    return calcularMedia.simples(trValues.slice(-periodo), periodo);
+  } catch (e) {
+    return 0;
+  }
+}
+
+function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multiplicador = CONFIG.LIMIARES.SUPERTREND_SENSIBILIDADE) {
+  try {
+    if (!Array.isArray(dados) || dados.length < periodo) return { direcao: 0, valor: 0 };
+    
+    const atr = calcularATR(dados, periodo);
+    const ultimo = dados[dados.length - 1];
+    const hl2 = (ultimo.high + ultimo.low) / 2;
+    
+    const upperBand = hl2 + (multiplicador * atr);
+    const lowerBand = hl2 - (multiplicador * atr);
+    
+    let direcao = ultimo.close > hl2 ? 1 : -1;
+    let superTrend = direcao === 1 ? lowerBand : upperBand;
+    
+    return { direcao, valor: superTrend };
+  } catch (e) {
+    return { direcao: 0, valor: 0 };
+  }
+}
+
+// ✅ DETERMINAÇÃO DE TENDÊNCIA REFATORADA
+function determinarTendencia(emaCurta, emaMedia, emaLonga, precoAtual) {
+  try {
+    if (emaCurta === 0 || emaMedia === 0 || emaLonga === 0) return "INDEFINIDA";
+    
+    const regras = [
+      { 
+        condicao: () => emaCurta > emaMedia && emaMedia > emaLonga && precoAtual > emaCurta, 
+        resultado: "FORTE_ALTA" 
+      },
+      { 
+        condicao: () => emaCurta > emaMedia && emaMedia > emaLonga, 
+        resultado: "ALTA" 
+      },
+      { 
+        condicao: () => emaCurta < emaMedia && emaMedia < emaLonga && precoAtual < emaCurta, 
+        resultado: "FORTE_BAIXA" 
+      },
+      { 
+        condicao: () => emaCurta < emaMedia && emaMedia < emaLonga, 
+        resultado: "BAIXA" 
+      },
+      { 
+        condicao: () => true, 
+        resultado: "LATERAL" 
+      }
+    ];
+    
+    return regras.find(regra => regra.condicao()).resultado;
+  } catch (e) {
+    return "INDEFINIDA";
+  }
+}
+
+// ✅ VERIFICAR HORÁRIO IDEAL PARA BINARY OPTIONS
+function verificarHorarioIdealBinary() {
+  const agora = new Date();
+  const hora = agora.getHours();
+  
+  const horarios = CONFIG.BINARY_OPTIONS.HORARIOS_IDEAIS;
+  
+  // Verificar horários para evitar
+  for (const evitar of horarios.EVITAR) {
+    if ((hora >= evitar.inicio && hora < evitar.fim) || 
+        (evitar.inicio > evitar.fim && (hora >= evitar.inicio || hora < evitar.fim))) {
+      return { ideal: false, motivo: evitar.motivo, multiplicador: 0.7 };
+    }
+  }
+  
+  // Verificar horários ideais
+  if (hora >= horarios.LONDRES_NY.inicio && hora <= horarios.LONDRES_NY.fim) {
+    return { ideal: true, motivo: "Overlap Londres-NY", multiplicador: horarios.LONDRES_NY.multiplicador };
+  }
+  
+  if (hora >= horarios.NY_ABERTURA.inicio && hora <= horarios.NY_ABERTURA.fim) {
+    return { ideal: true, motivo: "Abertura NY", multiplicador: horarios.NY_ABERTURA.multiplicador };
+  }
+  
+  return { ideal: false, motivo: "Horário neutro", multiplicador: 1.0 };
+}
+
+// ✅ CALCULAR SCORE PARA BINARY OPTIONS
+function calcularScoreBinaryOptions(indicadores) {
+  let score = 50;
+  let confirmacoes = [];
+  
+  // RSI
+  if (indicadores.rsi < CONFIG.LIMIARES.RSI_OVERSOLD) {
+    score += 8 * CONFIG.PESOS.RSI;
+    confirmacoes.push("RSI Oversold");
+  } else if (indicadores.rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT) {
+    score -= 8 * CONFIG.PESOS.RSI;
+    confirmacoes.push("RSI Overbought");
+  }
+  
+  // MACD
+  if (indicadores.macd.histograma > 0.0001) {
+    score += 10 * CONFIG.PESOS.MACD;
+    confirmacoes.push("MACD Bullish");
+  } else if (indicadores.macd.histograma < -0.0001) {
+    score -= 10 * CONFIG.PESOS.MACD;
+    confirmacoes.push("MACD Bearish");
+  }
+  
+  // Tendência
+  switch(indicadores.tendencia) {
+    case "FORTE_ALTA":
+      score += 15 * CONFIG.PESOS.TENDENCIA;
+      confirmacoes.push("Tendência FORTE ALTA");
+      break;
+    case "ALTA":
+      score += 10 * CONFIG.PESOS.TENDENCIA;
+      confirmacoes.push("Tendência ALTA");
+      break;
+    case "FORTE_BAIXA":
+      score -= 15 * CONFIG.PESOS.TENDENCIA;
+      confirmacoes.push("Tendência FORTE BAIXA");
+      break;
+    case "BAIXA":
+      score -= 10 * CONFIG.PESOS.TENDENCIA;
+      confirmacoes.push("Tendência BAIXA");
+      break;
+    case "LATERAL":
+      score -= 5 * CONFIG.PESOS.LATERALIDADE;
+      confirmacoes.push("Mercado LATERAL");
+      break;
+  }
+  
+  // SuperTrend
+  if (indicadores.superTrend.direcao === 1 && indicadores.close > indicadores.superTrend.valor) {
+    score += 8 * CONFIG.PESOS.SUPERTREND;
+    confirmacoes.push("SuperTrend BULL");
+  } else if (indicadores.superTrend.direcao === -1 && indicadores.close < indicadores.superTrend.valor) {
+    score -= 8 * CONFIG.PESOS.SUPERTREND;
+    confirmacoes.push("SuperTrend BEAR");
+  }
+  
+  // Volume
+  const volumeRatio = indicadores.volume / indicadores.volumeMedia;
+  if (volumeRatio > CONFIG.LIMIARES.VOLUME_EXTREMO) {
+    score += 12 * CONFIG.PESOS.VOLUME;
+    confirmacoes.push(`Volume EXTREMO: ${volumeRatio.toFixed(1)}x`);
+  } else if (volumeRatio > CONFIG.LIMIARES.VOLUME_ALTO) {
+    score += 8 * CONFIG.PESOS.VOLUME;
+    confirmacoes.push(`Volume ALTO: ${volumeRatio.toFixed(1)}x`);
+  } else if (volumeRatio < 0.8) {
+    score -= 8 * CONFIG.PESOS.VOLUME;
+    confirmacoes.push("Volume BAIXO");
+  }
+  
+  // Stochastic
+  if (indicadores.stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD) {
+    score += 4 * CONFIG.PESOS.STOCH;
+    confirmacoes.push("Stoch Oversold");
+  } else if (indicadores.stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT) {
+    score -= 4 * CONFIG.PESOS.STOCH;
+    confirmacoes.push("Stoch Overbought");
+  }
+  
+  // Williams
+  if (indicadores.williams < CONFIG.LIMIARES.WILLIAMS_OVERSOLD) {
+    score += 3 * CONFIG.PESOS.WILLIAMS;
+    confirmacoes.push("Williams Oversold");
+  } else if (indicadores.williams > CONFIG.LIMIARES.WILLIAMS_OVERBOUGHT) {
+    score -= 3 * CONFIG.PESOS.WILLIAMS;
+    confirmacoes.push("Williams Overbought");
+  }
+  
+  // VWAP
+  if (indicadores.vwap > 0) {
+    const vwapDesvio = Math.abs(indicadores.close - indicadores.vwap) / indicadores.vwap;
+    if (vwapDesvio > CONFIG.LIMIARES.VWAP_DESVIO) {
+      if (indicadores.close > indicadores.vwap) {
+        score += 3 * CONFIG.PESOS.VWAP;
+        confirmacoes.push("Acima VWAP");
+      } else {
+        score -= 3 * CONFIG.PESOS.VWAP;
+        confirmacoes.push("Abaixo VWAP");
+      }
+    }
+  }
+  
+  // Order Book (se disponível)
+  if (indicadores.buyPressure !== undefined) {
+    if (indicadores.buyPressure > 0.6) {
+      score += 5 * CONFIG.PESOS.INSTITUTIONAL;
+      confirmacoes.push(`Buy Pressure: ${(indicadores.buyPressure*100).toFixed(1)}%`);
+    } else if (indicadores.buyPressure < 0.4) {
+      score -= 5 * CONFIG.PESOS.INSTITUTIONAL;
+      confirmacoes.push(`Sell Pressure: ${((1-indicadores.buyPressure)*100).toFixed(1)}%`);
+    }
+  }
+  
+  // Aplicar multiplicador de horário
+  const horario = verificarHorarioIdealBinary();
+  score *= horario.multiplicador;
+  if (horario.multiplicador !== 1.0) {
+    confirmacoes.push(`${horario.motivo} (${horario.multiplicador}x)`);
+  }
+  
+  const scoreFinal = Math.min(100, Math.max(0, Math.round(score)));
+  
+  return {
+    score: scoreFinal,
+    confirmacoes,
+    confluencia: confirmacoes.length,
+    horario: horario,
+    volumeRatio: indicadores.volume / indicadores.volumeMedia
+  };
+}
+
+// ✅ DETERMINAR SINAL PARA BINARY OPTIONS
+function determinarSinalBinary(analise, indicadores) {
+  // Filtros rigorosos
+  if (analise.score < CONFIG.RISCO.SCORE_MINIMO_ENTRADA) {
+    return {
+      sinal: "ESPERAR",
+      motivo: `Score baixo: ${analise.score}% (mín: ${CONFIG.RISCO.SCORE_MINIMO_ENTRADA}%)`,
+      analise
+    };
+  }
+  
+  if (analise.confluencia < CONFIG.RISCO.CONFLUENCIA_MINIMA) {
+    return {
+      sinal: "ESPERAR", 
+      motivo: `Poucas confirmações: ${analise.confluencia}/${CONFIG.RISCO.CONFLUENCIA_MINIMA}`,
+      analise
+    };
+  }
+  
+  if (analise.volumeRatio < CONFIG.RISCO.VOLUME_MINIMO_MULTIPLICADOR) {
+    return {
+      sinal: "ESPERAR",
+      motivo: `Volume baixo: ${analise.volumeRatio.toFixed(1)}x (mín: ${CONFIG.RISCO.VOLUME_MINIMO_MULTIPLICADOR}x)`,
+      analise
+    };
+  }
+  
+  // Determinar direção
+  let direcaoCall = 0;
+  let direcaoPut = 0;
+  
+  if (indicadores.rsi < CONFIG.LIMIARES.RSI_OVERSOLD) direcaoCall += 2;
+  else if (indicadores.rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT) direcaoPut += 2;
+  
+  if (indicadores.macd.histograma > 0) direcaoCall += 2;
+  else direcaoPut += 2;
+  
+  if (indicadores.superTrend.direcao === 1) direcaoCall += 3;
+  else if (indicadores.superTrend.direcao === -1) direcaoPut += 3;
+  
+  if (indicadores.tendencia.includes("ALTA")) direcaoCall += 3;
+  else if (indicadores.tendencia.includes("BAIXA")) direcaoPut += 3;
+  
+  if (indicadores.stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD) direcaoCall += 1;
+  else if (indicadores.stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT) direcaoPut += 1;
+  
+  let sinalFinal;
+  if (direcaoCall > direcaoPut + 1) {
+    sinalFinal = "CALL";
+  } else if (direcaoPut > direcaoCall + 1) {
+    sinalFinal = "PUT";
+  } else {
+    sinalFinal = "ESPERAR";
+  }
+  
+  return {
+    sinal: sinalFinal,
+    motivo: `Direção: CALL=${direcaoCall}, PUT=${direcaoPut}`,
+    analise,
+    direcoes: { call: direcaoCall, put: direcaoPut }
+  };
+}
+
+// ✅ FUNÇÃO PARA PARAR O SISTEMA
+function pararSistema() {
+  if (state.intervaloAtual) {
+    clearInterval(state.intervaloAtual);
+    state.intervaloAtual = null;
+  }
+  console.log("🛑 Sistema parado com sucesso!");
+}
+
+// ✅ SINCRONIZAÇÃO DE TIMER MELHORADA
+function sincronizarTimer() {
+  const agora = new Date();
+  const segundosRestantes = 60 - agora.getSeconds();
+  
+  state.timer = segundosRestantes;
+  
+  const timerElement = document.getElementById("timer");
+  if (timerElement) timerElement.textContent = formatarTimer(segundosRestantes);
+  
+  // Parar qualquer intervalo existente
+  if (state.intervaloAtual) clearInterval(state.intervaloAtual);
+  
+  // Configurar nova sincronização
+  state.intervaloAtual = setInterval(() => {
+    const agora = new Date();
+    if (agora.getSeconds() === 0 && !state.leituraEmAndamento) {
+      analisarMercadoPublico();
+    }
+    
+    // Atualizar contador visual
+    state.timer = 60 - agora.getSeconds();
+    if (timerElement) timerElement.textContent = formatarTimer(state.timer);
+  }, 1000);
+}
+
+// ✅ ANÁLISE PRINCIPAL COM APIs PÚBLICAS
+async function analisarMercadoPublico() {
+  if (state.leituraEmAndamento || !state.marketOpen) return;
+  state.leituraEmAndamento = true;
+  
+  try {
+    console.log("🚀 Análise com APIs Públicas...");
+    
+    // Obter dados reais de APIs públicas
+    const [dados, ticker, orderBook] = await Promise.all([
+      obterDadosReaisPublicos(),
+      obterTickerPublico().catch(() => null),
+      obterOrderBookPublico().catch(() => null)
+    ]);
+    
+    const velaAtual = dados[dados.length - 1];
+    console.log(`📊 Dados: ${dados.length} velas, Preço: $${velaAtual.close.toFixed(2)}, Source: ${velaAtual.source}`);
+    
+    // Extrair dados
+    const closes = dados.map(v => v.close);
+    const highs = dados.map(v => v.high);
+    const lows = dados.map(v => v.low);
+    const volumes = dados.map(v => v.volume);
+    
+    // Calcular indicadores
+    const indicadores = {
+      rsi: calcularRSI(closes),
+      macd: calcularMACD(closes),
+      stoch: calcularStochastic(highs, lows, closes),
+      williams: calcularWilliams(highs, lows, closes),
+      superTrend: calcularSuperTrend(dados),
+      vwap: calcularVWAP(dados),
+      atr: calcularATR(dados),
+      
+      close: velaAtual.close,
+      volume: velaAtual.volume,
+      volumeMedia: calcularMedia.simples(volumes.slice(-20), 20),
+      
+      // Order book (se disponível)
+      buyPressure: orderBook?.buyPressure,
+      sellPressure: orderBook?.sellPressure,
+      spread: orderBook?.spreadPercent
+    };
+    
+    // Calcular tendência
+    const emasCurta = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA);
+    const emasMedia = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA);
+    const emasLonga = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_LONGA);
+    
+    const emaCurta = emasCurta[emasCurta.length - 1] || 0;
+    const emaMedia = emasMedia[emasMedia.length - 1] || 0;
+    const emaLonga = emasLonga[emasLonga.length - 1] || 0;
+    
+    indicadores.tendencia = determinarTendencia(emaCurta, emaMedia, emaLonga, velaAtual.close);
+    
+    // Análise para binary options
+    const analise = calcularScoreBinaryOptions(indicadores);
+    const resultado = determinarSinalBinary(analise, indicadores);
+    
+    // Atualizar estado
+    state.ultimoSinal = resultado.sinal;
+    state.ultimoScore = resultado.analise.score;
+    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
+    
+    // Atualizar interface
+    atualizarInterface(resultado.sinal, resultado.analise.score);
+    
+    // Log resultado
+    console.log("📈 Resultado APIs Públicas:", {
+      sinal: resultado.sinal,
+      score: resultado.analise.score,
+      preco: velaAtual.close.toFixed(2),
+      volumeRatio: (velaAtual.volume / indicadores.volumeMedia).toFixed(2),
+      confluencia: resultado.analise.confluencia,
+      source: velaAtual.source,
+      buyPressure: orderBook?.buyPressure?.toFixed(3) || 'N/A'
+    });
+    
+    // Histórico
+    const historico = `${state.ultimaAtualizacao} - ${resultado.sinal} (${resultado.analise.score}%) - $${velaAtual.close.toFixed(2)} - ${velaAtual.source}`;
+    state.ultimos.unshift(historico);
+    if (state.ultimos.length > 10) state.ultimos.pop();
+    
+    const ultimosElement = document.getElementById("ultimos");
+    if (ultimosElement) {
+      ultimosElement.innerHTML = state.ultimos.map(item => `<li>${item}</li>`).join("");
+    }
+    
+    state.tentativasErro = 0;
+    
+  } catch (e) {
+    console.error("❌ Erro análise pública:", e);
+    atualizarInterface("ERRO", 0);
+    state.tentativasErro++;
+    
+    if (state.tentativasErro > 3) {
+      console.error("🔄 Muitos erros, aguardando...");
+      setTimeout(() => {
+        state.tentativasErro = 0;
+        state.leituraEmAndamento = false;
+      }, 60000);
+    }
+  } finally {
+    state.leituraEmAndamento = false;
+  }
+}
+
+// ✅ INICIALIZAÇÃO SISTEMA PÚBLICO
+function iniciarSistemaPublico() {
+  console.log("🚀 Iniciando Sistema com APIs PÚBLICAS...");
+  console.log("💡 APIs: Binance, Coinbase, Bybit, CoinGecko");
+  console.log("🔑 Chaves: NÃO NECESSÁRIAS!");
+  
+  // Verificar elementos
+  const elementos = ['comando', 'score', 'hora', 'timer'];
+  const faltando = elementos.filter(id => !document.getElementById(id));
+  
+  if (faltando.length > 0) {
+    console.error("❌ Elementos faltando:", faltando);
+    return;
+  }
+  
+  // Primeira análise
+  analisarMercadoPublico();
+  
+  // Timer
+  sincronizarTimer();
+  
+  // Relógio
+  setInterval(atualizarRelogio, 1000);
+  
+  console.log("✅ Sistema PÚBLICO iniciado!");
+  console.log("🎯 Meta: 85-92% assertividade com dados REAIS");
+}
+
+// Auto-inicialização
+if (document.readyState === "complete") {
+  iniciarSistemaPublico();
+} else {
+  document.addEventListener("DOMContentLoaded", iniciarSistemaPublico);
+}
+
+// Exportar funções para depuração (opcional)
+window.analisarMercadoPublico = analisarMercadoPublico;
+window.pararSistema = pararSistema;
