@@ -1,5 +1,5 @@
 // =============================================
-// CONFIGURAÇÕES GLOBAIS (ATUALIZADAS PARA ALPHA VANTAGE)
+// CONFIGURAÇÕES GLOBAIS (ATUALIZADAS PARA TWELVE DATA)
 // =============================================
 const state = {
   ultimos: [],
@@ -27,7 +27,7 @@ const state = {
 
 const CONFIG = {
   API_ENDPOINTS: {
-    ALPHAVANTAGE: "https://www.alphavantage.co"
+    TWELVEDATA: "https://api.twelvedata.com"
   },
   PARES: {
     FOREX_IDX: "GBP/NZD"
@@ -81,35 +81,34 @@ const CONFIG = {
 };
 
 // =============================================
-// FUNÇÃO PARA OBTER DADOS DO ALPHA VANTAGE
+// FUNÇÃO PARA OBTER DADOS DA TWELVE DATA
 // =============================================
 async function obterDadosMercado() {
   try {
     const response = await fetch(
-      `${CONFIG.API_ENDPOINTS.ALPHAVANTAGE}/query?function=FX_INTRADAY&from_symbol=GBP&to_symbol=NZD&interval=1min&apikey=25CS0R2YAR5S75OC&outputsize=compact`
+      `${CONFIG.API_ENDPOINTS.TWELVEDATA}/time_series?symbol=GBP/NZD&interval=1min&apikey=9cf795b2a4f14d43a049ca935d174e&outputsize=100`
     );
 
-    if (!response.ok) throw new Error("Erro na API Alpha Vantage");
+    if (!response.ok) throw new Error("Erro na Twelve Data API");
 
     const data = await response.json();
 
-    if (!data["Time Series FX (1min)"]) {
-      console.error("Dados inválidos:", data);
-      throw new Error("Resposta da API em formato desconhecido");
+    if (!data.values || data.status === "error") {
+      console.error("Erro na API:", data.message || "Dados inválidos");
+      throw new Error(data.message || "Resposta inesperada da API");
     }
 
-    const dadosFormatados = Object.entries(data["Time Series FX (1min)"]).map(([time, valores]) => ({
-      time,
-      open: parseFloat(valores["1. open"]),
-      high: parseFloat(valores["2. high"]),
-      low: parseFloat(valores["3. low"]),
-      close: parseFloat(valores["4. close"]),
+    return data.values.map(v => ({
+      time: v.datetime,
+      open: parseFloat(v.open),
+      high: parseFloat(v.high),
+      low: parseFloat(v.low),
+      close: parseFloat(v.close),
       volume: 10000
-    }));
+    })).reverse();
 
-    return dadosFormatados.slice(-100);
   } catch (e) {
-    console.error("Erro ao obter dados:", e);
+    console.error("Falha ao buscar dados:", e);
     throw e;
   }
 }
@@ -501,7 +500,7 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
     
     const slice = dados.slice(-periodo);
     const buckets = {};
-    const precisao = 4; // Mais casas decimais para Forex
+    const precisao = 4;
     
     for (const vela of slice) {
       const amplitude = vela.high - vela.low;
@@ -571,7 +570,7 @@ function detectarDivergencias(closes, rsis, highs, lows) {
     const divergenciaAlta = baixaPreco && altaRSI;
     
     const altaPreco = ultimosHighs[0] > ultimosHighs[2] && ultimosHighs[2] > ultimosHighs[4];
-    const baixaRSI = ultimosRSIs[0] < ultimosRSIs[2] && ultimosRSIs[2] < ultimosRSIs[4];
+    const baixaRSI = ultimosRSIs[0] < ultimosRSIs[2] && ultimosRSIs[2] < ultimosRSIs[4]);
     const divergenciaBaixa = altaPreco && baixaRSI;
     
     return {
@@ -587,7 +586,7 @@ function detectarDivergencias(closes, rsis, highs, lows) {
 }
 
 // =============================================
-// CORE DO SISTEMA (ATUALIZADO PARA FOREX)
+// CORE DO SISTEMA (ATUALIZADO)
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento || !state.marketOpen) return;
