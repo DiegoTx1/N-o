@@ -1084,6 +1084,3 @@
 
     // Iniciar quando o documento estiver pronto
     document.addEventListener("DOMContentLoaded", iniciarSistemaPublico);
-  </script>
-</body>
-</html>
