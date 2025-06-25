@@ -17,8 +17,12 @@ const state = {
 };
 
 const CONFIG = {
-  API_KEY: "9cf795b2a4f14d43a049ca935d174ebb",
-  API_ENDPOINT: "https://api.twelvedata.com/time_series",
+  API_KEY: "c856b9a3b0msh1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p",
+  API_ENDPOINT: "https://twelvedata.p.rapidapi.com",
+  HEADERS: {
+    "X-RapidAPI-Key": "c856b9a3b0msh1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p",
+    "X-RapidAPI-Host": "twelvedata.p.rapidapi.com"
+  },
   PARES: {
     FOREX: "EUR/USD"
   },
@@ -61,7 +65,8 @@ function atualizarRelogio() {
     minute: '2-digit',
     second: '2-digit'
   });
-  document.getElementById("hora").textContent = state.ultimaAtualizacao;
+  const horaElement = document.getElementById("hora");
+  if (horaElement) horaElement.textContent = state.ultimaAtualizacao;
 }
 
 function verificarVelaNova(dados) {
@@ -81,185 +86,276 @@ const calcularMedia = {
   simples: (dados, periodo) => {
     if (!Array.isArray(dados) return 0;
     const slice = dados.slice(-periodo);
-    return slice.reduce((a, b) => a + b, 0) / periodo;
+    if (slice.length === 0) return 0;
+    return slice.reduce((a, b) => a + b, 0) / slice.length;
   },
+
   exponencial: (dados, periodo) => {
-    if (!Array.isArray(dados)) return [];
+    if (!Array.isArray(dados) return [];
+    if (dados.length < periodo) return Array(dados.length).fill(0);
+    
     const k = 2 / (periodo + 1);
     let ema = calcularMedia.simples(dados.slice(0, periodo), periodo);
-    return dados.reduce((acc, val) => {
-      ema = val * k + ema * (1 - k);
-      acc.push(ema);
-      return acc;
-    }, []);
+    const emaArray = [ema];
+    
+    for (let i = periodo; i < dados.length; i++) {
+      ema = dados[i] * k + ema * (1 - k);
+      emaArray.push(ema);
+    }
+    
+    return emaArray;
   }
 };
 
 function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
-  if (closes.length < periodo + 1) return 50;
+  if (!Array.isArray(closes) || closes.length < periodo + 1) return 50;
+  
   let gains = 0, losses = 0;
   for (let i = 1; i <= periodo; i++) {
     const diff = closes[i] - closes[i - 1];
-    diff > 0 ? gains += diff : losses += Math.abs(diff);
+    if (diff > 0) gains += diff;
+    else losses += Math.abs(diff);
   }
-  const avgGain = gains / periodo;
-  const avgLoss = Math.max(losses / periodo, 0.000001);
+
+  let avgGain = gains / periodo;
+  let avgLoss = Math.max(losses / periodo, 0.000001);
+
+  for (let i = periodo + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? Math.abs(diff) : 0;
+    
+    avgGain = (avgGain * (periodo - 1) + gain) / periodo;
+    avgLoss = (avgLoss * (periodo - 1) + loss) / periodo;
+  }
+
   const rs = avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
 }
 
 function calcularStochastic(highs, lows, closes, periodo = CONFIG.PERIODOS.STOCH) {
-  const kValues = [];
-  for (let i = periodo - 1; i < closes.length; i++) {
-    const sliceHigh = highs.slice(i - periodo + 1, i + 1);
-    const sliceLow = lows.slice(i - periodo + 1, i + 1);
-    const highest = Math.max(...sliceHigh);
-    const lowest = Math.min(...sliceLow);
-    const range = highest - lowest;
-    kValues.push(range > 0 ? ((closes[i] - lowest) / range) * 100 : 50);
+  try {
+    if (!Array.isArray(closes) return { k: 50, d: 50 };
+    
+    const kValues = [];
+    for (let i = periodo - 1; i < closes.length; i++) {
+      const sliceHigh = highs.slice(i - periodo + 1, i + 1);
+      const sliceLow = lows.slice(i - periodo + 1, i + 1);
+      const highest = Math.max(...sliceHigh);
+      const lowest = Math.min(...sliceLow);
+      const range = highest - lowest;
+      kValues.push(range > 0 ? ((closes[i] - lowest) / range) * 100 : 50);
+    }
+    
+    const dValue = kValues.length >= 3 ? 
+      calcularMedia.simples(kValues.slice(-3), 3) : 50;
+    
+    return {
+      k: kValues[kValues.length - 1] || 50,
+      d: dValue || 50
+    };
+  } catch (e) {
+    console.error("Erro no Stochastic:", e);
+    return { k: 50, d: 50 };
   }
-  return {
-    k: kValues[kValues.length - 1] || 50,
-    d: calcularMedia.simples(kValues.slice(-3), 3) || 50
-  };
 }
 
 function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA, 
                      lenta = CONFIG.PERIODOS.MACD_LENTA, 
                      sinal = CONFIG.PERIODOS.MACD_SINAL) {
-  const emaRapida = calcularMedia.exponencial(closes, rapida);
-  const emaLenta = calcularMedia.exponencial(closes, lenta);
-  const macdLine = emaRapida.map((val, idx) => val - emaLenta[idx]);
-  const signalLine = calcularMedia.exponencial(macdLine.slice(-30), sinal);
-  return {
-    histograma: macdLine[macdLine.length - 1] - signalLine[signalLine.length - 1],
-    macdLinha: macdLine[macdLine.length - 1],
-    sinalLinha: signalLine[signalLine.length - 1]
-  };
+  try {
+    const emaRapida = calcularMedia.exponencial(closes, rapida);
+    const emaLenta = calcularMedia.exponencial(closes, lenta);
+    
+    if (emaRapida.length < lenta || emaLenta.length < lenta) {
+      return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+    }
+    
+    const macdLine = emaRapida.slice(-emaLenta.length).map((val, idx) => val - emaLenta[idx]);
+    const signalLine = calcularMedia.exponencial(macdLine.slice(-30), sinal);
+    
+    return {
+      histograma: macdLine[macdLine.length - 1] - signalLine[signalLine.length - 1],
+      macdLinha: macdLine[macdLine.length - 1],
+      sinalLinha: signalLine[signalLine.length - 1]
+    };
+  } catch (e) {
+    console.error("Erro no MACD:", e);
+    return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+  }
 }
 
 function calcularATR(dados, periodo = CONFIG.PERIODOS.ATR) {
-  const trValues = [];
-  for (let i = 1; i < dados.length; i++) {
-    const tr = Math.max(
-      dados[i].high - dados[i].low,
-      Math.abs(dados[i].high - dados[i - 1].close),
-      Math.abs(dados[i].low - dados[i - 1].close)
-    );
-    trValues.push(tr);
+  try {
+    if (!Array.isArray(dados) return 0;
+    
+    const trValues = [];
+    for (let i = 1; i < dados.length; i++) {
+      const tr = Math.max(
+        dados[i].high - dados[i].low,
+        Math.abs(dados[i].high - dados[i - 1].close),
+        Math.abs(dados[i].low - dados[i - 1].close)
+      );
+      trValues.push(tr);
+    }
+    
+    return calcularMedia.simples(trValues.slice(-periodo), periodo);
+  } catch (e) {
+    console.error("Erro no ATR:", e);
+    return 0;
   }
-  return calcularMedia.simples(trValues.slice(-periodo), periodo);
 }
 
 function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multiplicador = 3) {
-  const atr = calcularATR(dados, periodo);
-  const ultimo = dados[dados.length - 1];
-  const hl2 = (ultimo.high + ultimo.low) / 2;
-  const upper = hl2 + (multiplicador * atr);
-  const lower = hl2 - (multiplicador * atr);
-  let direcao = 1;
-  let valor = upper;
-  
-  if (dados.length > periodo) {
-    const prev = dados[dados.length - 2];
-    if (prev.close > valor) {
-      direcao = 1;
-      valor = Math.min(upper, prev.superTrend || upper);
-    } else {
-      direcao = -1;
-      valor = Math.max(lower, prev.superTrend || lower);
+  try {
+    if (!Array.isArray(dados)) return { direcao: 0, valor: 0 };
+    
+    const atr = calcularATR(dados, periodo);
+    const ultimo = dados[dados.length - 1];
+    const hl2 = (ultimo.high + ultimo.low) / 2;
+    const upper = hl2 + (multiplicador * atr);
+    const lower = hl2 - (multiplicador * atr);
+    
+    let direcao = 1;
+    let valor = upper;
+    
+    if (dados.length > periodo) {
+      const prev = dados[dados.length - 2];
+      if (prev.close > valor) {
+        direcao = 1;
+        valor = Math.min(upper, prev.superTrend || upper);
+      } else {
+        direcao = -1;
+        valor = Math.max(lower, prev.superTrend || lower);
+      }
     }
+    
+    return { direcao, valor };
+  } catch (e) {
+    console.error("Erro no SuperTrend:", e);
+    return { direcao: 0, valor: 0 };
   }
-  return { direcao, valor };
 }
 
 // =============================================
 // SISTEMA DE TENDÊNCIA
 // =============================================
 function avaliarTendencia(closes, highs, lows, volumes) {
-  const ema5 = calcularMedia.exponencial(closes, 5).pop();
-  const ema13 = calcularMedia.exponencial(closes, 13).pop();
-  const ema50 = calcularMedia.exponencial(closes, 50).pop();
-  
-  // Direção primária
-  let direcao = "NEUTRA";
-  if (ema5 > ema13 && ema13 > ema50) direcao = "ALTA";
-  if (ema5 < ema13 && ema13 < ema50) direcao = "BAIXA";
-  
-  // Cálculo de força
-  const atr = calcularATR(closes.map((c, i) => ({
-    high: highs[i], low: lows[i], close: c
-  })), 14);
-  
-  const distancia = Math.abs(ema5 - ema13);
-  let forca = Math.min(100, Math.round((distancia / (atr || 0.0001)) * 50));
-  
-  // Confirmação de volume
-  const volumeAtual = volumes[volumes.length - 1];
-  const volumeMedio = calcularMedia.simples(volumes.slice(-20), 20);
-  if (volumeAtual > volumeMedio * 1.5) forca = Math.min(100, forca + 20);
-  
-  // Classificação final
-  if (forca >= 70) return { tendencia: `FORTE_${direcao}`, forca };
-  if (forca >= 40) return { tendencia: direcao, forca };
-  return { tendencia: "NEUTRA", forca: 0 };
+  try {
+    if (!Array.isArray(closes)) return { tendencia: "NEUTRA", forca: 0 };
+    
+    const ema5 = calcularMedia.exponencial(closes, 5).pop();
+    const ema13 = calcularMedia.exponencial(closes, 13).pop();
+    const ema50 = calcularMedia.exponencial(closes, 50).pop();
+    
+    // Direção primária
+    let direcao = "NEUTRA";
+    if (ema5 > ema13 && ema13 > ema50) direcao = "ALTA";
+    if (ema5 < ema13 && ema13 < ema50) direcao = "BAIXA";
+    
+    // Cálculo de força
+    const atr = calcularATR(closes.map((c, i) => ({
+      high: highs[i], low: lows[i], close: c
+    })), 14);
+    
+    const distancia = Math.abs(ema5 - ema13);
+    let forca = Math.min(100, Math.round((distancia / (atr || 0.0001)) * 50));
+    
+    // Confirmação de volume
+    const volumeAtual = volumes[volumes.length - 1];
+    const volumeMedio = calcularMedia.simples(volumes.slice(-20), 20);
+    if (volumeAtual > volumeMedio * 1.5) forca = Math.min(100, forca + 20);
+    
+    // Classificação final
+    if (forca >= 70) return { tendencia: `FORTE_${direcao}`, forca };
+    if (forca >= 40) return { tendencia: direcao, forca };
+    return { tendencia: "NEUTRA", forca: 0 };
+    
+  } catch (e) {
+    console.error("Erro na avaliação de tendência:", e);
+    return { tendencia: "NEUTRA", forca: 0 };
+  }
 }
 
 // =============================================
 // GERADOR DE SINAIS
 // =============================================
 function gerarSinal(indicadores) {
-  const { rsi, stoch, macd, close, emaCurta, emaMedia, volume, volumeMedia, superTrend, tendencia } = indicadores;
-  
-  // Bloqueio durante notícias
-  if (state.ultimoScore > 85 && Date.now() - state.ultimaAtualizacao < 30000) {
+  try {
+    const { rsi, stoch, macd, close, emaCurta, emaMedia, volume, volumeMedia, superTrend, tendencia } = indicadores;
+    
+    // Bloqueio durante notícias
+    if (state.ultimoScore > 85 && Date.now() - state.ultimaAtualizacao < 30000) {
+      return "ESPERAR";
+    }
+    
+    // Sistema de pontuação
+    let callScore = 0, putScore = 0;
+    
+    // Regras para CALL
+    if (tendencia.tendencia.includes("ALTA")) callScore += 2;
+    if (close > emaCurta) callScore += 1;
+    if (macd.histograma > 0) callScore += 1;
+    if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD) callScore += 1;
+    if (volume > volumeMedia * 1.3) callScore += 1;
+    if (superTrend.direcao > 0) callScore += 1;
+    
+    // Regras para PUT
+    if (tendencia.tendencia.includes("BAIXA")) putScore += 2;
+    if (close < emaCurta) putScore += 1;
+    if (macd.histograma < 0) putScore += 1;
+    if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT) putScore += 1;
+    if (volume > volumeMedia * 1.3) putScore += 1;
+    if (superTrend.direcao < 0) putScore += 1;
+    
+    // Determinar sinal
+    if (callScore >= 4 && callScore > putScore) return "CALL";
+    if (putScore >= 4 && putScore > callScore) return "PUT";
+    
+    return "ESPERAR";
+    
+  } catch (e) {
+    console.error("Erro na geração de sinal:", e);
     return "ESPERAR";
   }
-  
-  // Sistema de pontuação
-  let callScore = 0, putScore = 0;
-  
-  // Regras para CALL
-  if (tendencia.tendencia.includes("ALTA")) callScore += 2;
-  if (close > emaCurta) callScore += 1;
-  if (macd.histograma > 0) callScore += 1;
-  if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD) callScore += 1;
-  if (volume > volumeMedia * 1.3) callScore += 1;
-  if (superTrend.direcao > 0) callScore += 1;
-  
-  // Regras para PUT
-  if (tendencia.tendencia.includes("BAIXA")) putScore += 2;
-  if (close < emaCurta) putScore += 1;
-  if (macd.histograma < 0) putScore += 1;
-  if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT) putScore += 1;
-  if (volume > volumeMedia * 1.3) putScore += 1;
-  if (superTrend.direcao < 0) putScore += 1;
-  
-  // Determinar sinal
-  if (callScore >= 4 && callScore > putScore) return "CALL";
-  if (putScore >= 4 && putScore > callScore) return "PUT";
-  
-  return "ESPERAR";
 }
 
 // =============================================
 // CORE DO SISTEMA
 // =============================================
 async function obterDadosTwelveData() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  
   try {
-    const response = await fetch(
-      `${CONFIG.API_ENDPOINT}?symbol=${CONFIG.PARES.FOREX}&interval=1min&apikey=${CONFIG.API_KEY}&outputsize=100`
-    );
+    const response = await fetch(`${CONFIG.API_ENDPOINT}/time_series?symbol=${CONFIG.PARES.FOREX}&interval=1min&outputsize=100`, {
+      headers: CONFIG.HEADERS,
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
     const data = await response.json();
-    return data.values?.map(v => ({
-      time: v.datetime,
-      open: parseFloat(v.open),
-      high: parseFloat(v.high),
-      low: parseFloat(v.low),
-      close: parseFloat(v.close),
-      volume: parseFloat(v.volume || 1)
-    })).reverse() || [];
+    
+    if (!data.values || !Array.isArray(data.values)) {
+      throw new Error("Formato de dados inválido");
+    }
+    
+    return data.values.map(item => ({
+      time: item.datetime,
+      open: parseFloat(item.open),
+      high: parseFloat(item.high),
+      low: parseFloat(item.low),
+      close: parseFloat(item.close),
+      volume: parseFloat(item.volume || 1)
+    })).reverse();
+    
   } catch (error) {
+    clearTimeout(timeoutId);
     console.error("Erro na API:", error);
     return [];
   }
@@ -312,16 +408,37 @@ async function analisarMercado() {
     state.ultimoScore = score;
     state.tendenciaAtual = tendencia.tendencia;
     state.forcaTendencia = tendencia.forca;
+    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
     
     // Atualizar interface
-    document.getElementById("comando").textContent = sinal;
-    document.getElementById("score").textContent = `Confiança: ${score}%`;
+    const comandoElement = document.getElementById("comando");
+    const scoreElement = document.getElementById("score");
+    
+    if (comandoElement) {
+      comandoElement.textContent = sinal;
+      comandoElement.className = sinal.toLowerCase();
+    }
+    
+    if (scoreElement) {
+      scoreElement.textContent = `Confiança: ${score}%`;
+      scoreElement.style.color = score >= 85 ? '#00FF00' : 
+                                score >= 70 ? '#FFFF00' : '#FF0000';
+    }
+    
+    console.log("Análise concluída:", {
+      time: new Date().toISOString(),
+      signal: sinal,
+      score,
+      trend: tendencia.tendencia,
+      rsi,
+      macd: macd.histograma
+    });
     
   } catch (error) {
     console.error("Erro na análise:", error);
     state.tentativasErro++;
     if (state.tentativasErro > 3) {
-      setTimeout(() => location.reload(), 10000);
+      setTimeout(() => location.reload(), 15000);
     }
   } finally {
     state.leituraEmAndamento = false;
@@ -332,45 +449,74 @@ async function analisarMercado() {
 // CONTROLE DE TEMPO
 // =============================================
 function sincronizarTimer() {
-  clearInterval(state.intervaloAtual);
-  const agora = Date.now();
-  const delay = 60000 - (agora % 60000);
-  state.timer = Math.max(1, Math.floor(delay / 1000));
+  clearTimeout(state.intervaloAtual);
+  const agora = new Date();
+  const segundos = agora.getSeconds();
+  state.timer = 60 - segundos;
   
   const timerElement = document.getElementById("timer");
   if (timerElement) {
     timerElement.textContent = formatarTimer(state.timer);
-    timerElement.style.color = state.timer <= 5 ? 'red' : '';
+    timerElement.style.color = state.timer <= 10 ? '#FF0000' : '#00FF00';
   }
   
-  state.intervaloAtual = setInterval(() => {
-    state.timer--;
-    if (timerElement) {
-      timerElement.textContent = formatarTimer(state.timer);
-      timerElement.style.color = state.timer <= 5 ? 'red' : '';
-    }
-    if (state.timer <= 0) {
-      clearInterval(state.intervaloAtual);
+  if (state.timer <= 1) {
+    setTimeout(() => {
       analisarMercado().finally(sincronizarTimer);
-    }
-  }, 1000);
+    }, 1000 - agora.getMilliseconds());
+  } else {
+    state.intervaloAtual = setTimeout(sincronizarTimer, 1000);
+  }
 }
 
 // =============================================
 // INICIALIZAÇÃO
 // =============================================
+function verificarDependencias() {
+  const elementosNecessarios = ['comando', 'score', 'hora', 'timer'];
+  const faltando = elementosNecessarios.filter(id => !document.getElementById(id));
+  
+  if (faltando.length > 0) {
+    console.error("Elementos HTML faltando:", faltando);
+    return false;
+  }
+  return true;
+}
+
 function iniciarAplicativo() {
-  if (!document.getElementById("comando") || 
-      !document.getElementById("score")) {
-    console.error("Elementos da interface não encontrados!");
+  if (!verificarDependencias()) {
+    console.error("Não foi possível iniciar - elementos faltando");
     return;
   }
   
+  console.log("Iniciando aplicativo EURUSD M1...");
+  state.mercadoAberto = true;
+  
+  // Configurações iniciais
   setInterval(atualizarRelogio, 1000);
   sincronizarTimer();
-  setTimeout(analisarMercado, 2000);
   
-  console.log("Sistema iniciado com sucesso!");
+  // Primeira análise com delay seguro
+  setTimeout(() => {
+    analisarMercado()
+      .then(() => console.log("Primeira análise concluída"))
+      .catch(e => console.error("Falha na primeira análise:", e));
+  }, 2000);
 }
 
-document.addEventListener("DOMContentLoaded", iniciarAplicativo);
+// Iniciar quando o DOM estiver pronto
+if (document.readyState === "complete") {
+  iniciarAplicativo();
+} else {
+  document.addEventListener("DOMContentLoaded", iniciarAplicativo);
+}
+
+// Monitoramento de saúde
+setInterval(() => {
+  console.log("Status do sistema:", {
+    ultimoSinal: state.ultimoSinal,
+    ultimoScore: state.ultimoScore,
+    tentativasErro: state.tentativasErro,
+    memoria: window.performance?.memory?.usedJSHeapSize || 'N/A'
+  });
+}, 60000);
