@@ -15,7 +15,7 @@ const state = {
 };
 
 const CONFIG = {
-  API_KEY: "9cf795b2a4f14d43a049ca935d174ebb",
+  API_KEY: "0105e6681b894e0185704171c53f5075",
   SYMBOL: "EUR/USD",
   INTERVAL: "1min",
   API_URL: "https://api.twelvedata.com/time_series",
@@ -74,7 +74,7 @@ function calcularMACD(closes) {
   const ema12 = mediaExponencial(closes, CONFIG.PERIODOS.MACD_RAPIDA);
   const ema26 = mediaExponencial(closes, CONFIG.PERIODOS.MACD_LENTA);
   const macd = ema12 - ema26;
-  const sinal = mediaExponencial(closes.map((_, i) => i >= 26 ? ema12 - ema26 : 0), CONFIG.PERIODOS.MACD_SINAL);
+  const sinal = mediaExponencial([macd], CONFIG.PERIODOS.MACD_SINAL);
   return {
     histograma: macd - sinal,
     linha: macd,
@@ -131,18 +131,22 @@ function gerarSinal({ rsi, macd, close, ema9, ema20, ema45, boll }) {
 // DADOS DA API TWELVE DATA
 // =============================================
 async function obterDados() {
-  const url = `${CONFIG.API_URL}?symbol=${CONFIG.SYMBOL}&interval=${CONFIG.INTERVAL}&outputsize=100&apikey=${CONFIG.API_KEY}`;
-  const res = await fetch(url);
-  const json = await res.json();
-  if (!json || !json.values) throw new Error("Erro na API");
-
-  return json.values.reverse().map(v => ({
-    open: parseFloat(v.open),
-    high: parseFloat(v.high),
-    low: parseFloat(v.low),
-    close: parseFloat(v.close),
-    datetime: v.datetime
-  }));
+  try {
+    const url = `${CONFIG.API_URL}?symbol=${CONFIG.SYMBOL}&interval=${CONFIG.INTERVAL}&outputsize=100&apikey=${CONFIG.API_KEY}`;
+    const res = await fetch(url);
+    const json = await res.json();
+    if (!json || !json.values) throw new Error("Erro ao carregar dados da API");
+    return json.values.reverse().map(v => ({
+      open: parseFloat(v.open),
+      high: parseFloat(v.high),
+      low: parseFloat(v.low),
+      close: parseFloat(v.close),
+      datetime: v.datetime
+    }));
+  } catch (e) {
+    console.error("Erro ao obter dados:", e);
+    return [];
+  }
 }
 
 // =============================================
@@ -154,6 +158,8 @@ async function analisarMercado() {
 
   try {
     const velas = await obterDados();
+    if (velas.length === 0) throw new Error("Sem dados");
+
     const closes = velas.map(v => v.close);
     const closeAtual = closes[closes.length - 1];
 
@@ -171,7 +177,7 @@ async function analisarMercado() {
     atualizarInterface(sinal, score);
     salvarHistorico(sinal, score);
   } catch (e) {
-    console.error("Erro:", e);
+    console.error("Erro na análise:", e);
     atualizarInterface("ERRO", 0);
   } finally {
     state.leituraEmAndamento = false;
@@ -231,8 +237,10 @@ function sincronizarTimer() {
 // INICIAR APLICAÇÃO
 // =============================================
 function iniciar() {
-  if (document.readyState !== "complete") {
-    document.addEventListener("DOMContentLoaded", iniciar);
+  const ids = ['comando','score','hora','timer','ultimos'];
+  const faltando = ids.filter(id => !document.getElementById(id));
+  if (faltando.length) {
+    console.warn("⚠️ Elementos faltando no HTML:", faltando.join(", "));
     return;
   }
 
@@ -245,4 +253,5 @@ function iniciar() {
   analisarMercado();
 }
 
-iniciar();
+if (document.readyState === "complete") iniciar();
+else document.addEventListener("DOMContentLoaded", iniciar);
