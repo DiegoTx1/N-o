@@ -70,10 +70,13 @@ function atualizarRelogio() {
 }
 
 function verificarVelaNova(dados) {
-  if (!dados || dados.length === 0 || !dados[dados.length - 1]) return false;
+  if (!dados || dados.length === 0) return false;
+  
   const ultimaVela = dados[dados.length - 1];
-  if (ultimaVela.time !== state.ultimaVelaProcessada) {
-    state.ultimaVelaProcessada = ultimaVela.time;
+  const timestamp = new Date(ultimaVela.time).getTime();
+  
+  if (!state.ultimaVelaProcessada || timestamp > state.ultimaVelaProcessada) {
+    state.ultimaVelaProcessada = timestamp;
     return true;
   }
   return false;
@@ -171,8 +174,9 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
       return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
     }
     
-    const macdLine = emaRapida.slice(-emaLenta.length).map((val, idx) => val - emaLenta[idx]);
-    const signalLine = calcularMedia.exponencial(macdLine.slice(-30), sinal);
+    const startIndex = emaRapida.length - emaLenta.length;
+    const macdLine = emaRapida.slice(startIndex).map((val, idx) => val - emaLenta[idx]);
+    const signalLine = calcularMedia.exponencial(macdLine, sinal);
     
     return {
       histograma: macdLine[macdLine.length - 1] - signalLine[signalLine.length - 1],
@@ -213,24 +217,15 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
     const atr = calcularATR(dados, periodo) || 0.0001;
     const ultimo = dados[dados.length - 1];
     const hl2 = (ultimo.high + ultimo.low) / 2;
+    
+    // Versão simplificada sem dependência de estado anterior
     const upper = hl2 + (multiplicador * atr);
     const lower = hl2 - (multiplicador * atr);
     
-    let direcao = 1;
-    let valor = upper;
-    
-    if (dados.length > periodo) {
-      const prev = dados[dados.length - 2];
-      if (prev.close > valor) {
-        direcao = 1;
-        valor = Math.min(upper, prev.superTrend || upper);
-      } else {
-        direcao = -1;
-        valor = Math.max(lower, prev.superTrend || lower);
-      }
-    }
-    
-    return { direcao, valor };
+    return {
+      direcao: ultimo.close > upper ? 1 : ultimo.close < lower ? -1 : 0,
+      valor: ultimo.close > upper ? upper : ultimo.close < lower ? lower : hl2
+    };
   } catch (e) {
     console.error("Erro no SuperTrend:", e);
     return { direcao: 0, valor: 0 };
@@ -244,26 +239,36 @@ function avaliarTendencia(closes, highs, lows, volumes) {
   try {
     if (!Array.isArray(closes) || closes.length < 50) return { tendencia: "NEUTRA", forca: 0 };
     
-    const ema5 = calcularMedia.exponencial(closes, 5).pop();
-    const ema13 = calcularMedia.exponencial(closes, 13).pop();
-    const ema50 = calcularMedia.exponencial(closes, 50).pop();
+    // Usar apenas os últimos dados necessários
+    const sliceSize = Math.max(50, CONFIG.PERIODOS.EMA_LONGA);
+    const slicedCloses = closes.slice(-sliceSize);
+    
+    const ema5 = calcularMedia.exponencial(slicedCloses, CONFIG.PERIODOS.EMA_CURTA).pop() || slicedCloses[slicedCloses.length - 1];
+    const ema13 = calcularMedia.exponencial(slicedCloses, CONFIG.PERIODOS.EMA_MEDIA).pop() || slicedCloses[slicedCloses.length - 1];
+    const ema50 = calcularMedia.exponencial(slicedCloses, CONFIG.PERIODOS.EMA_LONGA).pop() || slicedCloses[slicedCloses.length - 1];
     
     // Direção primária
     let direcao = "NEUTRA";
     if (ema5 > ema13 && ema13 > ema50) direcao = "ALTA";
-    if (ema5 < ema13 && ema13 < ema50) direcao = "BAIXA";
+    else if (ema5 < ema13 && ema13 < ema50) direcao = "BAIXA";
     
     // Cálculo de força
-    const atr = calcularATR(closes.map((c, i) => ({
-      high: highs[i], low: lows[i], close: c
-    })), 14);
+    const dadosParaATR = [];
+    for (let i = closes.length - sliceSize; i < closes.length; i++) {
+      dadosParaATR.push({
+        high: highs[i],
+        low: lows[i],
+        close: closes[i]
+      });
+    }
+    const atr = calcularATR(dadosParaATR, 14) || 0.0001;
     
     const distancia = Math.abs(ema5 - ema13);
-    let forca = Math.min(100, Math.round((distancia / (atr || 0.0001)) * 50));
+    let forca = Math.min(100, Math.round((distancia / atr) * 50));
     
     // Confirmação de volume
     const volumeAtual = volumes[volumes.length - 1];
-    const volumeMedio = calcularMedia.simples(volumes.slice(-20), 20);
+    const volumeMedio = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME);
     if (volumeAtual > volumeMedio * CONFIG.LIMIARES.VOLUME_ALTO) {
       forca = Math.min(100, forca + 20);
     }
@@ -286,11 +291,6 @@ function gerarSinal(indicadores) {
   try {
     const { rsi, stoch, macd, close, emaCurta, emaMedia, volume, volumeMedia, superTrend, tendencia } = indicadores;
     
-    // Bloqueio durante notícias
-    if (state.ultimoScore > 85 && Date.now() - state.ultimaAtualizacao < 30000) {
-      return "ESPERAR";
-    }
-    
     // Sistema de pontuação
     let callScore = 0, putScore = 0;
     
@@ -310,9 +310,15 @@ function gerarSinal(indicadores) {
     if (volume > volumeMedia * CONFIG.LIMIARES.VOLUME_ALTO) putScore += 1;
     if (superTrend.direcao < 0) putScore += 1;
     
-    // Determinar sinal
-    if (callScore >= 4 && callScore > putScore) return "CALL";
-    if (putScore >= 4 && putScore > callScore) return "PUT";
+    // Regra especial para tendências fortes
+    if (tendencia.forca > 80) {
+      if (tendencia.tendencia.includes("ALTA") && callScore >= 2) return "CALL";
+      if (tendencia.tendencia.includes("BAIXA") && putScore >= 2) return "PUT";
+    }
+    
+    // Determinar sinal (limite reduzido para 3 pontos)
+    if (callScore >= 3 && callScore > putScore) return "CALL";
+    if (putScore >= 3 && putScore > callScore) return "PUT";
     
     return "ESPERAR";
     
@@ -359,6 +365,11 @@ async function obterDadosTwelveData() {
   } catch (error) {
     clearTimeout(timeoutId);
     console.error("Erro na API:", error);
+    state.tentativasErro++;
+    if (state.tentativasErro > 3) {
+      console.error("Muitas tentativas falhas - recarregando aplicativo");
+      setTimeout(() => location.reload(), 10000);
+    }
     return [];
   }
 }
@@ -394,12 +405,14 @@ async function analisarMercado() {
     
     // Gerar sinal
     const indicadores = {
-      rsi, stoch, macd,
+      rsi, 
+      stoch, 
+      macd,
       close: velaAtual.close,
-      emaCurta: calcularMedia.exponencial(closes, 5).pop(),
-      emaMedia: calcularMedia.exponencial(closes, 13).pop(),
+      emaCurta: calcularMedia.exponencial(closes.slice(-30), CONFIG.PERIODOS.EMA_CURTA).pop() || velaAtual.close,
+      emaMedia: calcularMedia.exponencial(closes.slice(-30), CONFIG.PERIODOS.EMA_MEDIA).pop() || velaAtual.close,
       volume: velaAtual.volume,
-      volumeMedia: calcularMedia.simples(volumes.slice(-20), 20),
+      volumeMedia: calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME),
       superTrend,
       tendencia
     };
@@ -417,7 +430,7 @@ async function analisarMercado() {
     state.forcaTendencia = tendencia.forca;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
     
-    // Atualizar interface com verificações
+    // Atualizar interface
     const comandoElement = document.getElementById("comando");
     const scoreElement = document.getElementById("score");
     
@@ -426,27 +439,31 @@ async function analisarMercado() {
       comandoElement.className = sinal.toLowerCase();
       
       scoreElement.textContent = `Confiança: ${score}%`;
-      scoreElement.style.color = score >= 85 ? '#00FF00' : 
-                                score >= 70 ? '#FFFF00' : '#FF0000';
-    } else {
-      console.error("Elementos da interface não encontrados!");
+      scoreElement.style.color = score >= CONFIG.LIMIARES.SCORE_ALTO ? '#00FF00' : 
+                                score >= CONFIG.LIMIARES.SCORE_MEDIO ? '#FFFF00' : '#FF0000';
     }
     
+    // Log detalhado para depuração
     console.log("Análise concluída:", {
       time: new Date().toISOString(),
       signal: sinal,
       score,
       trend: tendencia.tendencia,
+      trendStrength: tendencia.forca,
       rsi,
-      macd: macd.histograma
+      stochK: stoch.k,
+      stochD: stoch.d,
+      macdHist: macd.histograma,
+      ema5: indicadores.emaCurta,
+      ema13: indicadores.emaMedia,
+      volumeRatio: (indicadores.volume / indicadores.volumeMedia).toFixed(2),
+      superTrendDir: superTrend.direcao,
+      callScore: indicadores.callScore,
+      putScore: indicadores.putScore
     });
     
   } catch (error) {
     console.error("Erro na análise:", error);
-    state.tentativasErro++;
-    if (state.tentativasErro > 3) {
-      setTimeout(() => location.reload(), 15000);
-    }
   } finally {
     state.leituraEmAndamento = false;
   }
@@ -458,28 +475,21 @@ async function analisarMercado() {
 function sincronizarTimer() {
   clearTimeout(state.intervaloAtual);
   
-  // Evitar sobreposição de análises
-  if (state.leituraEmAndamento) {
-    state.intervaloAtual = setTimeout(sincronizarTimer, 1000);
-    return;
-  }
-  
+  // Disparar análise a cada minuto
   const agora = new Date();
-  const segundos = agora.getSeconds();
-  state.timer = 60 - segundos;
+  const msAteProximoMinuto = 60000 - (agora.getSeconds() * 1000 + agora.getMilliseconds());
   
+  state.intervaloAtual = setTimeout(() => {
+    analisarMercado();
+    sincronizarTimer(); // Reagendar para o próximo minuto
+  }, msAteProximoMinuto);
+  
+  // Atualizar contador visual
+  state.timer = Math.floor(msAteProximoMinuto / 1000);
   const timerElement = document.getElementById("timer");
   if (timerElement) {
     timerElement.textContent = formatarTimer(state.timer);
     timerElement.style.color = state.timer <= 10 ? '#FF0000' : '#00FF00';
-  }
-  
-  if (state.timer <= 1) {
-    setTimeout(() => {
-      analisarMercado().finally(sincronizarTimer);
-    }, 1000 - agora.getMilliseconds());
-  } else {
-    state.intervaloAtual = setTimeout(sincronizarTimer, 1000);
   }
 }
 
@@ -505,17 +515,24 @@ function iniciarAplicativo() {
   
   console.log("Iniciando aplicativo EURUSD M1...");
   state.mercadoAberto = true;
+  state.ultimaVelaProcessada = null;
   
   // Configurações iniciais
   setInterval(atualizarRelogio, 1000);
   sincronizarTimer();
   
-  // Primeira análise com delay seguro
-  setTimeout(() => {
-    analisarMercado()
-      .then(() => console.log("Primeira análise concluída"))
-      .catch(e => console.error("Falha na primeira análise:", e));
-  }, 2000);
+  // Primeira análise
+  setTimeout(() => analisarMercado(), 2000);
+  
+  // Monitoramento de saúde
+  setInterval(() => {
+    console.log("Status do sistema:", {
+      ultimoSinal: state.ultimoSinal,
+      ultimoScore: state.ultimoScore,
+      tentativasErro: state.tentativasErro,
+      memoria: window.performance?.memory?.usedJSHeapSize || 'N/A'
+    });
+  }, 60000);
 }
 
 // Iniciar quando o DOM estiver pronto
@@ -524,13 +541,3 @@ if (document.readyState === "complete") {
 } else {
   document.addEventListener("DOMContentLoaded", iniciarAplicativo);
 }
-
-// Monitoramento de saúde
-setInterval(() => {
-  console.log("Status do sistema:", {
-    ultimoSinal: state.ultimoSinal,
-    ultimoScore: state.ultimoScore,
-    tentativasErro: state.tentativasErro,
-    memoria: window.performance?.memory?.usedJSHeapSize || 'N/A'
-  });
-}, 60000);
