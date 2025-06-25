@@ -1,4 +1,10 @@
+.call { color: #00FF00; }
+.put { color: #FF0000; }
+.esperar { color: #CCCCCC; }
 
+#timer, #hora {
+  font-weight: bold;
+}
 body {
   background-color: #000;
   color: cyan;
