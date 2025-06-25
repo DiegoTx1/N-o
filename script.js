@@ -1,3 +1,4 @@
+<script>
 // =============================================
 // CONFIGURAÇÕES GLOBAIS (ATUALIZADAS PARA EURUSD)
 // =============================================
@@ -21,12 +22,16 @@ const state = {
   forcaTendencia: 0,
   dadosHistoricos: [],
   resistenciaKey: 0,
-  suporteKey: 0
+  suporteKey: 0,
+  stopLoss: 0,
+  takeProfit: 0,
+  historico: { win: 0, loss: 0 }
 };
 
 const CONFIG = {
   API_ENDPOINTS: {
-    TWELVE_DATA: "https://api.twelvedata.com"
+    TWELVE_DATA: "https://api.twelvedata.com",
+    CALENDARIO: "https://fiscaldataapi.com"
   },
   PARES: {
     FOREX_IDX: "EUR/USD"
@@ -48,66 +53,101 @@ const CONFIG = {
     ATR: 14,
     SUPERTREND: 10,
     VOLUME_PROFILE: 50,
-    LIQUIDITY_ZONES: 20
+    LIQUIDITY_ZONES: 20,
+    ADX: 14
   },
   LIMIARES: {
-    SCORE_ALTO: 85,  // Aumentado para 85%
-    SCORE_MEDIO: 70,
-    RSI_OVERBOUGHT: 70,
-    RSI_OVERSOLD: 30,
-    STOCH_OVERBOUGHT: 85,  // Ajustados para forex
-    STOCH_OVERSOLD: 15,
-    WILLIAMS_OVERBOUGHT: -15,  // Ajustados para forex
-    WILLIAMS_OVERSOLD: -85,
-    VARIACAO_LATERAL: 0.005,  // Mais sensível para forex
-    VWAP_DESVIO: 0.005,       // Mais sensível para forex
-    ATR_LIMIAR: 0.0005        // Mais sensível para forex
+    SCORE_ALTO: 88,
+    SCORE_MEDIO: 75,
+    RSI_OVERBOUGHT: 72,
+    RSI_OVERSOLD: 28,
+    STOCH_OVERBOUGHT: 82,
+    STOCH_OVERSOLD: 18,
+    WILLIAMS_OVERBOUGHT: -12,
+    WILLIAMS_OVERSOLD: -82,
+    VARIACAO_LATERAL: 0.004,
+    VWAP_DESVIO: 0.004,
+    ATR_LIMIAR: 0.0004,
+    ADX_FORTE: 25
   },
   PESOS: {
-    RSI: 1.7,        // Aumentados para melhor precisão
-    MACD: 2.2,
-    TENDENCIA: 2.8,
-    VOLUME: 0.5,     // Reduzido (volume menos relevante em forex)
-    STOCH: 1.2,
-    WILLIAMS: 1.1,
-    VWAP: 1.5,
-    SUPERTREND: 1.9,
-    VOLUME_PROFILE: 1.2, // Reduzido
-    DIVERGENCIA: 2.0,
-    LIQUIDITY: 1.8
+    RSI: 1.5,
+    MACD: 2.0,
+    TENDENCIA: 3.0,
+    VOLUME: 0.4,
+    STOCH: 1.0,
+    WILLIAMS: 1.0,
+    VWAP: 1.3,
+    SUPERTREND: 2.0,
+    VOLUME_PROFILE: 1.0,
+    DIVERGENCIA: 2.2,
+    LIQUIDITY: 1.5,
+    ADX: 1.8
+  },
+  GESTAO_RISCO: {
+    MULTIPLICADOR_SL: 1.8,
+    MULTIPLICADOR_TP: 3.5,
+    RR_MINIMO: 2.0
   }
 };
 
 // =============================================
-// SISTEMA DE TENDÊNCIA OTIMIZADO PARA FOREX
+// VERIFICAÇÃO DE MERCADO ABERTO
 // =============================================
-function avaliarTendencia(closes, ema8, ema21, ema200) {
+function verificarHorarioMercado() {
+  const agora = new Date();
+  const horaUTC = agora.getUTCHours();
+  const diaSemana = agora.getUTCDay();
+  
+  const horarioAltaLiquidez = horaUTC >= 12 && horaUTC < 20;
+  const fimDeSemana = diaSemana === 0 || diaSemana === 6;
+  
+  state.marketOpen = horarioAltaLiquidez && !fimDeSemana;
+  return state.marketOpen;
+}
+
+// =============================================
+// SISTEMA DE TENDÊNCIA COM ADX
+// =============================================
+function avaliarTendencia(closes, highs, lows, ema8, ema21, ema200) {
   const ultimoClose = closes[closes.length - 1];
   
-  // Tendência de longo prazo
   const tendenciaLongoPrazo = ultimoClose > ema200 ? "ALTA" : "BAIXA";
-  
-  // Tendência de médio prazo
   const tendenciaMedioPrazo = ema8 > ema21 ? "ALTA" : "BAIXA";
   
-  // Força da tendência baseada em EMA
   const distanciaMedia = Math.abs(ema8 - ema21);
   const forcaBase = Math.min(100, Math.round(distanciaMedia / ultimoClose * 10000));
   
-  let forcaTotal = forcaBase;
-  if (tendenciaLongoPrazo === tendenciaMedioPrazo) forcaTotal += 30;
+  const adx = calcularADX(highs, lows, closes, CONFIG.PERIODOS.ADX);
+  const forcaADX = Math.min(100, Math.round(adx * 100 / 50));
   
-  // Determinar tendência final
-  if (forcaTotal > 80) {
+  let forcaTotal = Math.round(forcaADX * 0.7 + forcaBase * 0.3);
+  
+  let estrutura = "NEUTRA";
+  if (closes.length > 10) {
+    const ultimos10 = closes.slice(-10);
+    const max10 = Math.max(...ultimos10);
+    const min10 = Math.min(...ultimos10);
+    
+    if (ultimoClose > max10 && closes[closes.length - 2] > closes[closes.length - 3]) {
+      estrutura = "ALTA";
+    } else if (ultimoClose < min10 && closes[closes.length - 2] < closes[closes.length - 3]) {
+      estrutura = "BAIXA";
+    }
+  }
+
+  const tendenciaDominante = tendenciaMedioPrazo === tendenciaLongoPrazo ? tendenciaMedioPrazo : "NEUTRA";
+  
+  if (forcaTotal > 80 && adx > CONFIG.LIMIARES.ADX_FORTE && tendenciaDominante === estrutura) {
     return { 
-      tendencia: tendenciaMedioPrazo === "ALTA" ? "FORTE_ALTA" : "FORTE_BAIXA",
-      forca: Math.min(100, forcaTotal)
+      tendencia: tendenciaDominante === "ALTA" ? "FORTE_ALTA" : "FORTE_BAIXA",
+      forca: forcaTotal
     };
   }
   
-  if (forcaTotal > 50) {
+  if (forcaTotal > 55) {
     return { 
-      tendencia: tendenciaMedioPrazo,
+      tendencia: tendenciaDominante,
       forca: forcaTotal
     };
   }
@@ -119,9 +159,11 @@ function avaliarTendencia(closes, ema8, ema21, ema200) {
 }
 
 // =============================================
-// GERADOR DE SINAIS DE ALTA PRECISÃO PARA EURUSD
+// GERADOR DE SINAIS (COM VERIFICAÇÃO DE MERCADO)
 // =============================================
 function gerarSinal(indicadores, divergencias) {
+  if (!state.marketOpen) return "PAUSADO";
+  
   const {
     rsi,
     stoch,
@@ -132,152 +174,156 @@ function gerarSinal(indicadores, divergencias) {
     superTrend,
     volumeProfile,
     liquidez,
-    tendencia
+    tendencia,
+    volume,
+    volumeMedia,
+    adx
   } = indicadores;
   
-  // Definir níveis-chave de suporte e resistência
   state.suporteKey = Math.min(volumeProfile.vaLow, liquidez.suporte, emaMedia);
   state.resistenciaKey = Math.max(volumeProfile.vaHigh, liquidez.resistencia, emaMedia);
   
-  // 1. Sinal de tendência forte (volume removido)
   if (tendencia.tendencia === "FORTE_ALTA") {
     const condicoesCompra = [
       close > emaCurta,
-      macd.histograma > 0,
-      stoch.k > 60,
-      close > superTrend.valor && superTrend.direcao > 0
+      macd.histograma > 0 && macd.histograma > macd.sinalLinha * 0.8,
+      stoch.k > 60 && stoch.k > stoch.d,
+      close > superTrend.valor && superTrend.direcao > 0,
+      volume > volumeMedia * 1.2,
+      adx > CONFIG.LIMIARES.ADX_FORTE
     ];
     
-    if (condicoesCompra.filter(Boolean).length >= 3) {
-      return "CALL";
-    }
+    if (condicoesCompra.filter(Boolean).length >= 5) return "CALL";
   }
   
-  // 2. Sinal de tendência forte de baixa (volume removido)
   if (tendencia.tendencia === "FORTE_BAIXA") {
     const condicoesVenda = [
       close < emaCurta,
-      macd.histograma < 0,
-      stoch.k < 40,
-      close < superTrend.valor && superTrend.direcao < 0
+      macd.histograma < 0 && macd.histograma < macd.sinalLinha * 0.8,
+      stoch.k < 40 && stoch.k < stoch.d,
+      close < superTrend.valor && superTrend.direcao < 0,
+      volume > volumeMedia * 1.2,
+      adx > CONFIG.LIMIARES.ADX_FORTE
     ];
     
-    if (condicoesVenda.filter(Boolean).length >= 3) {
-      return "PUT";
-    }
+    if (condicoesVenda.filter(Boolean).length >= 5) return "PUT";
   }
   
-  // 3. Sinal de rompimento (volume removido)
   const variacao = state.resistenciaKey - state.suporteKey;
-  const limiteBreakout = variacao * 0.1;
+  const limiteBreakout = Math.max(variacao * 0.15, state.atr * 1.2);
   
   if (close > (state.resistenciaKey + limiteBreakout)) {
-    return "CALL";
+    const velas = state.dadosHistoricos.slice(-3);
+    const confirmacao = velas.filter(v => v.close > state.resistenciaKey).length >= 2;
+    if (volume > volumeMedia * 1.5 && confirmacao) return "CALL";
   }
   
   if (close < (state.suporteKey - limiteBreakout)) {
-    return "PUT";
+    const velas = state.dadosHistoricos.slice(-3);
+    const confirmacao = velas.filter(v => v.close < state.suporteKey).length >= 2;
+    if (volume > volumeMedia * 1.5 && confirmacao) return "PUT";
   }
   
-  // 4. Sinal de reversão por divergência
   if (divergencias.divergenciaRSI) {
-    if (divergencias.tipoDivergencia === "ALTA" && close > state.suporteKey) {
-      return "CALL";
+    if (divergencias.tipoDivergencia === "ALTA") {
+      const condicoes = [
+        close > state.suporteKey,
+        rsi > 45,
+        volume > volumeMedia * 1.3,
+        stoch.k > 20 && stoch.d > 20
+      ];
+      if (condicoes.filter(Boolean).length >= 3) return "CALL";
     }
     
-    if (divergencias.tipoDivergencia === "BAIXA" && close < state.resistenciaKey) {
-      return "PUT";
+    if (divergencias.tipoDivergencia === "BAIXA") {
+      const condicoes = [
+        close < state.resistenciaKey,
+        rsi < 55,
+        volume > volumeMedia * 1.3,
+        stoch.k < 80 && stoch.d < 80
+      ];
+      if (condicoes.filter(Boolean).length >= 3) return "PUT";
     }
-  }
-  
-  // 5. Sinal de reversão por RSI extremo
-  if (rsi < 25 && close > emaMedia) {
-    return "CALL";
-  }
-  
-  if (rsi > 75 && close < emaMedia) {
-    return "PUT";
   }
   
   return "ESPERAR";
 }
 
 // =============================================
-// CALCULADOR DE CONFIANÇA PRECISO (OTIMIZADO)
+// CALCULADOR DE CONFIANÇA
 // =============================================
 function calcularScore(sinal, indicadores, divergencias) {
-  let score = 65; // Base aumentada
+  if (!state.marketOpen) return 0;
+  
+  let score = 60;
 
-  // Fatores gerais otimizados
   const fatores = {
     alinhamentoTendencia: sinal === "CALL" && indicadores.tendencia.tendencia.includes("ALTA") ||
                           sinal === "PUT" && indicadores.tendencia.tendencia.includes("BAIXA") ? 25 : 0,
-    divergencia: divergencias.divergenciaRSI ? 20 : 0,
+    divergencia: divergencias.divergenciaRSI ? 22 : 0,
+    volume: indicadores.volume > indicadores.volumeMedia * 1.2 ? 12 : 0,
     posicaoMedia: sinal === "CALL" && indicadores.close > indicadores.emaMedia ? 15 : 
                   sinal === "PUT" && indicadores.close < indicadores.emaMedia ? 15 : 0,
     superTrend: sinal === "CALL" && indicadores.close > indicadores.superTrend.valor ? 10 :
-                sinal === "PUT" && indicadores.close < indicadores.superTrend.valor ? 10 : 0
+                sinal === "PUT" && indicadores.close < indicadores.superTrend.valor ? 10 : 0,
+    adx: indicadores.adx > CONFIG.LIMIARES.ADX_FORTE ? 15 : 0
   };
   
-  // Adicionar pontos específicos
+  const penalidades = {
+    noticiaProxima: state.noticiasRecentes.length > 0 ? -30 : 0,
+    rsiExtremo: (indicadores.rsi > 75 || indicadores.rsi < 25) ? -20 : 0
+  };
+
   score += Object.values(fatores).reduce((sum, val) => sum + val, 0);
+  score += Object.values(penalidades).reduce((sum, val) => sum + val, 0);
   
-  // Limitar entre 0-100
   return Math.min(100, Math.max(0, score));
 }
 
 // =============================================
-// FUNÇÕES UTILITÁRIAS
+// GESTÃO DE RISCO
 // =============================================
-function formatarTimer(segundos) {
-  return `0:${segundos.toString().padStart(2, '0')}`;
-}
-
-function atualizarRelogio() {
-  const elementoHora = document.getElementById("hora");
-  if (elementoHora) {
-    const now = new Date();
-    state.ultimaAtualizacao = now.toLocaleTimeString("pt-BR", {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-    elementoHora.textContent = state.ultimaAtualizacao;
-    state.marketOpen = true;
+function calcularGestaoRisco(sinal, close, atr) {
+  const { MULTIPLICADOR_SL, MULTIPLICADOR_TP } = CONFIG.GESTAO_RISCO;
+  
+  if (sinal === "CALL") {
+    state.stopLoss = close - (atr * MULTIPLICADOR_SL);
+    state.takeProfit = close + (atr * MULTIPLICADOR_TP);
+  } else if (sinal === "PUT") {
+    state.stopLoss = close + (atr * MULTIPLICADOR_SL);
+    state.takeProfit = close - (atr * MULTIPLICADOR_TP);
+  } else {
+    state.stopLoss = 0;
+    state.takeProfit = 0;
   }
 }
 
-function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
-  if (!state.marketOpen) return;
-  
-  const comandoElement = document.getElementById("comando");
-  if (comandoElement) {
-    comandoElement.textContent = sinal;
-    comandoElement.className = sinal.toLowerCase();
+// =============================================
+// FILTRO DE NOTÍCIAS
+// =============================================
+async function verificarNoticias() {
+  try {
+    const response = await fetch(`${CONFIG.API_ENDPOINTS.CALENDARIO}/economic-events?min_importance=2`);
+    if (!response.ok) throw new Error("Erro no calendário");
     
-    if (sinal === "CALL") comandoElement.textContent += " 📈";
-    else if (sinal === "PUT") comandoElement.textContent += " 📉";
-    else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
-  }
-  
-  const scoreElement = document.getElementById("score");
-  if (scoreElement) {
-    scoreElement.textContent = `Confiança: ${score}%`;
-    if (score >= CONFIG.LIMIARES.SCORE_ALTO) scoreElement.style.color = '#00ff00';
-    else if (score >= CONFIG.LIMIARES.SCORE_MEDIO) scoreElement.style.color = '#ffff00';
-    else scoreElement.style.color = '#ff0000';
-  }
-  
-  const tendenciaElement = document.getElementById("tendencia");
-  const forcaElement = document.getElementById("forca-tendencia");
-  if (tendenciaElement && forcaElement) {
-    tendenciaElement.textContent = tendencia;
-    forcaElement.textContent = `${forcaTendencia}%`;
+    const eventos = await response.json();
+    const agora = new Date();
+    const agoraUTC = agora.toISOString();
+    
+    state.noticiasRecentes = eventos.filter(evento => {
+      const diffHoras = (new Date(evento.date) - new Date(agoraUTC)) / (1000 * 60 * 60);
+      return diffHoras > 0 && diffHoras < 4;
+    });
+    
+    return state.noticiasRecentes.length === 0;
+  } catch (e) {
+    console.error("Erro ao verificar notícias:", e);
+    return true;
   }
 }
 
 // =============================================
-// INDICADORES TÉCNICOS (AJUSTADOS PARA FOREX)
+// INDICADORES TÉCNICOS
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -481,7 +527,7 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
     
     const slice = dados.slice(-periodo);
     const buckets = {};
-    const precisao = 5; // Aumentada para forex
+    const precisao = 5;
     
     for (const vela of slice) {
       const amplitude = vela.high - vela.low;
@@ -534,24 +580,24 @@ function calcularLiquidez(velas, periodo = CONFIG.PERIODOS.LIQUIDITY_ZONES) {
 
 function detectarDivergencias(closes, rsis, highs, lows) {
   try {
-    if (closes.length < 5 || rsis.length < 5) 
+    if (closes.length < 10 || rsis.length < 10) 
       return { divergenciaRSI: false, tipoDivergencia: "NENHUMA", divergenciaOculta: false };
     
     const rsiSuavizado = rsis.map((val, idx, arr) => {
       return idx > 1 ? (val + arr[idx-1] + arr[idx-2])/3 : val;
     });
     
-    const ultimosCloses = closes.slice(-5);
-    const ultimosRSIs = rsiSuavizado.slice(-5);
-    const ultimosHighs = highs.slice(-5);
-    const ultimosLows = lows.slice(-5);
+    const ultimosCloses = closes.slice(-10);
+    const ultimosRSIs = rsiSuavizado.slice(-10);
+    const ultimosHighs = highs.slice(-10);
+    const ultimosLows = lows.slice(-10);
     
-    const baixaPreco = ultimosLows[0] < ultimosLows[2] && ultimosLows[2] < ultimosLows[4];
-    const altaRSI = ultimosRSIs[0] > ultimosRSIs[2] && ultimosRSIs[2] > ultimosRSIs[4];
+    const baixaPreco = ultimosLows[0] < ultimosLows[4] && ultimosLows[4] < ultimosLows[8];
+    const altaRSI = ultimosRSIs[0] > ultimosRSIs[4] && ultimosRSIs[4] > ultimosRSIs[8];
     const divergenciaAlta = baixaPreco && altaRSI;
     
-    const altaPreco = ultimosHighs[0] > ultimosHighs[2] && ultimosHighs[2] > ultimosHighs[4];
-    const baixaRSI = ultimosRSIs[0] < ultimosRSIs[2] && ultimosRSIs[2] < ultimosRSIs[4];
+    const altaPreco = ultimosHighs[0] > ultimosHighs[4] && ultimosHighs[4] > ultimosHighs[8];
+    const baixaRSI = ultimosRSIs[0] < ultimosRSIs[4] && ultimosRSIs[4] < ultimosRSIs[8]);
     const divergenciaBaixa = altaPreco && baixaRSI;
     
     return {
@@ -566,45 +612,152 @@ function detectarDivergencias(closes, rsis, highs, lows) {
   }
 }
 
+function calcularADX(highs, lows, closes, periodo = CONFIG.PERIODOS.ADX) {
+  if (highs.length < periodo * 2) return 0;
+  
+  const trs = [Math.abs(highs[0] - lows[0])];
+  const plusDMs = [0];
+  const minusDMs = [0];
+  
+  for (let i = 1; i < highs.length; i++) {
+    const highDiff = highs[i] - highs[i-1];
+    const lowDiff = lows[i-1] - lows[i];
+    
+    trs.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i-1]),
+      Math.abs(lows[i] - closes[i-1])
+    ));
+    
+    plusDMs.push(highDiff > lowDiff && highDiff > 0 ? highDiff : 0);
+    minusDMs.push(lowDiff > highDiff && lowDiff > 0 ? lowDiff : 0);
+  }
+  
+  const tr14s = [calcularMedia.simples(trs.slice(0, periodo), periodo)];
+  const plusDM14s = [calcularMedia.simples(plusDMs.slice(0, periodo), periodo)];
+  const minusDM14s = [calcularMedia.simples(minusDMs.slice(0, periodo), periodo)];
+  
+  for (let i = periodo; i < trs.length; i++) {
+    tr14s.push(tr14s[i-periodo] - (tr14s[i-periodo]/periodo) + trs[i]);
+    plusDM14s.push(plusDM14s[i-periodo] - (plusDM14s[i-periodo]/periodo) + plusDMs[i]);
+    minusDM14s.push(minusDM14s[i-periodo] - (minusDM14s[i-periodo]/periodo) + minusDMs[i]);
+  }
+  
+  const dxs = [];
+  for (let i = periodo; i < tr14s.length; i++) {
+    const plusDI = 100 * (plusDM14s[i] / tr14s[i]);
+    const minusDI = 100 * (minusDM14s[i] / tr14s[i]);
+    const dx = 100 * Math.abs(plusDI - minusDI) / (plusDI + minusDI);
+    dxs.push(dx);
+  }
+  
+  return calcularMedia.simples(dxs.slice(-periodo), periodo) || 0;
+}
+
 // =============================================
-// CORE DO SISTEMA (ATUALIZADO PARA EURUSD)
+// FUNÇÕES UTILITÁRIAS
+// =============================================
+function formatarTimer(segundos) {
+  return segundos.toString();
+}
+
+function atualizarRelogio() {
+  const elementoHora = document.getElementById("hora");
+  if (elementoHora) {
+    const now = new Date();
+    state.ultimaAtualizacao = now.toLocaleTimeString("pt-BR");
+    elementoHora.textContent = state.ultimaAtualizacao;
+  }
+}
+
+function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
+  const comandoElement = document.getElementById("comando");
+  if (comandoElement) {
+    comandoElement.textContent = sinal;
+    comandoElement.className = sinal.toLowerCase();
+  }
+  
+  const scoreElement = document.getElementById("score");
+  if (scoreElement) {
+    scoreElement.textContent = `${score}%`;
+    if (score >= CONFIG.LIMIARES.SCORE_ALTO) scoreElement.className = "high";
+    else if (score >= CONFIG.LIMIARES.SCORE_MEDIO) scoreElement.className = "medium";
+    else scoreElement.className = "low";
+  }
+  
+  const criteriosElement = document.getElementById("criterios");
+  if (criteriosElement) {
+    criteriosElement.innerHTML = `
+      <li>Tendência: ${tendencia} (${forcaTendencia}%)</li>
+      <li>Suporte: ${state.suporteKey.toFixed(5)}</li>
+      <li>Resistência: ${state.resistenciaKey.toFixed(5)}</li>
+      <li>Stop Loss: ${state.stopLoss.toFixed(5)}</li>
+      <li>Take Profit: ${state.takeProfit.toFixed(5)}</li>
+    `;
+  }
+  
+  if (sinal !== "ESPERAR" && sinal !== "PAUSADO") {
+    state.ultimos.unshift(`${state.ultimaAtualizacao} - ${sinal} (${score}%)`);
+    if (state.ultimos.length > 8) state.ultimos.pop();
+    const ultimosElement = document.getElementById("ultimos");
+    if (ultimosElement) {
+      ultimosElement.innerHTML = state.ultimos.map(i => `<li>${i}</li>`).join("");
+    }
+  }
+}
+
+// =============================================
+// CORE DO SISTEMA
 // =============================================
 async function analisarMercado() {
-  if (state.leituraEmAndamento || !state.marketOpen) return;
+  if (state.leituraEmAndamento) return;
   state.leituraEmAndamento = true;
   
   try {
+    verificarHorarioMercado();
+    
+    if (!state.marketOpen) {
+      atualizarInterface("PAUSADO", 0, "Mercado Fechado", 0);
+      state.leituraEmAndamento = false;
+      return;
+    }
+
+    const semNoticias = await verificarNoticias();
+    if (!semNoticias) {
+      atualizarInterface("PAUSADO", 0, "Notícias próximas", 0);
+      state.leituraEmAndamento = false;
+      return;
+    }
+
     const dados = await obterDadosTwelveData();
+    state.dadosHistoricos = dados;
     const velaAtual = dados[dados.length - 1];
     const closes = dados.map(v => v.close);
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
     const volumes = dados.map(v => v.volume);
 
-    const ema8Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA);
-    const ema21Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA);
-    const ema200Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_LONGA);
-    const ema8 = ema8Array[ema8Array.length-1] || 0;
-    const ema21 = ema21Array[ema21Array.length-1] || 0;
-    const ema200 = ema200Array[ema200Array.length-1] || 0;
-
+    const ema8 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA).pop() || 0;
+    const ema21 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA).pop() || 0;
+    const ema200 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_LONGA).pop() || 0;
     const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME) || 1;
     const superTrend = calcularSuperTrend(dados);
     const volumeProfile = calcularVolumeProfile(dados);
     const liquidez = calcularLiquidez(dados);
-    
     const rsi = calcularRSI(closes);
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
-    
+    const atr = calcularATR(dados);
+    const adx = calcularADX(highs, lows, closes);
+    state.atr = atr;
+
     const rsiHistory = [];
     for (let i = CONFIG.PERIODOS.RSI; i <= closes.length; i++) {
       rsiHistory.push(calcularRSI(closes.slice(0, i)));
     }
     const divergencias = detectarDivergencias(closes, rsiHistory, highs, lows);
 
-    // SISTEMA DE TENDÊNCIA (volume removido)
-    const tendencia = avaliarTendencia(closes, ema8, ema21, ema200);
+    const tendencia = avaliarTendencia(closes, highs, lows, ema8, ema21, ema200);
     state.tendenciaDetectada = tendencia.tendencia;
     state.forcaTendencia = tendencia.forca;
 
@@ -620,40 +773,24 @@ async function analisarMercado() {
       superTrend,
       volumeProfile,
       liquidez,
-      tendencia
+      tendencia,
+      adx,
+      atr
     };
 
-    // GERADOR DE SINAIS
     const sinal = gerarSinal(indicadores, divergencias);
     const score = calcularScore(sinal, indicadores, divergencias);
+    
+    calcularGestaoRisco(sinal, velaAtual.close, atr);
 
-    // ATUALIZAR ESTADO
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
 
-    // ATUALIZAR INTERFACE
     atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
 
-    const criteriosElement = document.getElementById("criterios");
-    if (criteriosElement) {
-      criteriosElement.innerHTML = `
-        <li>📊 Tendência: ${state.tendenciaDetectada} (${state.forcaTendencia}%)</li>
-        <li>💰 Preço: ${indicadores.close.toFixed(5)}</li>
-        <li>📉 RSI: ${rsi.toFixed(2)} ${rsi < 30 ? '🔻' : rsi > 70 ? '🔺' : ''}</li>
-        <li>📊 MACD: ${macd.histograma.toFixed(6)} ${macd.histograma > 0 ? '🟢' : '🔴'}</li>
-        <li>📈 Stochastic: ${stoch.k.toFixed(2)}/${stoch.d.toFixed(2)}</li>
-        <li>📌 Médias: EMA8 ${ema8.toFixed(5)} | EMA21 ${ema21.toFixed(5)}</li>
-        <li>📊 Suporte: ${state.suporteKey.toFixed(5)} | Resistência: ${state.resistenciaKey.toFixed(5)}</li>
-        <li>⚠️ Divergência: ${divergencias.tipoDivergencia}</li>
-        <li>🚦 SuperTrend: ${superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'} (${superTrend.valor.toFixed(5)})</li>
-      `;
-    }
-
-    state.ultimos.unshift(`${state.ultimaAtualizacao} - ${sinal} (${score}%)`);
-    if (state.ultimos.length > 8) state.ultimos.pop();
-    const ultimosElement = document.getElementById("ultimos");
-    if (ultimosElement) ultimosElement.innerHTML = state.ultimos.map(i => `<li>${i}</li>`).join("");
+    if (sinal === "CALL") document.getElementById("som-call").play();
+    else if (sinal === "PUT") document.getElementById("som-put").play();
 
     state.tentativasErro = 0;
   } catch (e) {
@@ -666,21 +803,32 @@ async function analisarMercado() {
 }
 
 // =============================================
-// FUNÇÕES DE DADOS (TWELVE DATA API)
+// FUNÇÃO PARA REGISTRAR WIN/LOSS
+// =============================================
+function registrar(resultado) {
+  if (resultado === 'WIN') state.historico.win++;
+  else if (resultado === 'LOSS') state.historico.loss++;
+  
+  const historicoElement = document.getElementById("historico");
+  if (historicoElement) {
+    historicoElement.textContent = `${state.historico.win} WIN / ${state.historico.loss} LOSS`;
+  }
+}
+
+// =============================================
+// FUNÇÕES DE DADOS
 // =============================================
 async function obterDadosTwelveData() {
   try {
     const response = await fetch(`${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=1min&outputsize=100&apikey=9cf795b2a4f14d43a049ca935d174ebb`);
-    if (!response.ok) throw new Error("Falha na API Twelve Data");
+    if (!response.ok) throw new Error("Falha na API");
     
     const data = await response.json();
     
-    // Verificar erro na resposta
     if (data.code || data.status === 'error') {
-      throw new Error(data.message || `Erro Twelve Data: ${data.code}`);
+      throw new Error(data.message || `Erro: ${data.code}`);
     }
     
-    // Reverter a ordem para ter os dados mais antigos primeiro
     const valores = data.values.reverse();
     
     return valores.map(item => ({
@@ -692,7 +840,7 @@ async function obterDadosTwelveData() {
       volume: parseFloat(item.volume) || 1
     }));
   } catch (e) {
-    console.error("Erro ao obter dados da Twelve Data:", e);
+    console.error("Erro ao obter dados:", e);
     throw e;
   }
 }
@@ -707,18 +855,12 @@ function sincronizarTimer() {
   state.timer = 60 - segundos;
   
   const elementoTimer = document.getElementById("timer");
-  if (elementoTimer) {
-    elementoTimer.textContent = formatarTimer(state.timer);
-    elementoTimer.style.color = state.timer <= 5 ? 'red' : '';
-  }
+  if (elementoTimer) elementoTimer.textContent = formatarTimer(state.timer);
   
   state.intervaloAtual = setInterval(() => {
     state.timer--;
     
-    if (elementoTimer) {
-      elementoTimer.textContent = formatarTimer(state.timer);
-      elementoTimer.style.color = state.timer <= 5 ? 'red' : '';
-    }
+    if (elementoTimer) elementoTimer.textContent = formatarTimer(state.timer);
     
     if (state.timer <= 0) {
       clearInterval(state.intervaloAtual);
@@ -731,46 +873,11 @@ function sincronizarTimer() {
 // INICIALIZAÇÃO
 // =============================================
 function iniciarAplicativo() {
-  const ids = ['comando','score','hora','timer','criterios','ultimos'];
-  const falt = ids.filter(id => !document.getElementById(id));
-  
-  if (falt.length > 0) {
-    console.error("Elementos faltando:", falt);
-    return;
-  }
-  
-  // Configurar atualizações periódicas
-  setInterval(atualizarRelogio, 1000);
   sincronizarTimer();
-  
-  // Primeira análise
+  setInterval(atualizarRelogio, 1000);
   setTimeout(analisarMercado, 2000);
-  
-  // Botão de backtest
-  const backtestBtn = document.createElement('button');
-  backtestBtn.textContent = 'Executar Backtest (5 dias)';
-  backtestBtn.style.position = 'fixed';
-  backtestBtn.style.bottom = '10px';
-  backtestBtn.style.right = '10px';
-  backtestBtn.style.zIndex = '1000';
-  backtestBtn.style.padding = '10px';
-  backtestBtn.style.backgroundColor = '#2c3e50';
-  backtestBtn.style.color = 'white';
-  backtestBtn.style.border = 'none';
-  backtestBtn.style.borderRadius = '5px';
-  backtestBtn.style.cursor = 'pointer';
-  
-  backtestBtn.onclick = () => {
-    backtestBtn.textContent = 'Calculando...';
-    setTimeout(() => {
-      backtestBtn.textContent = 'Backtest Completo';
-      setTimeout(() => backtestBtn.textContent = 'Executar Backtest (5 dias)', 3000);
-    }, 2000);
-  };
-  
-  document.body.appendChild(backtestBtn);
 }
 
 // Iniciar quando o documento estiver pronto
-if (document.readyState === "complete") iniciarAplicativo();
-else document.addEventListener("DOMContentLoaded", iniciarAplicativo);
+document.addEventListener("DOMContentLoaded", iniciarAplicativo);
+</script>
