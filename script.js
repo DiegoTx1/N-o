@@ -49,9 +49,6 @@ const CONFIG = {
   }
 };
 
-// =============================================  
-// FUNÇÕES DE SUPORTE  
-// =============================================  
 function formatarTimer(segundos) {
   return `0:${segundos.toString().padStart(2, '0')}`;
 }
@@ -77,9 +74,6 @@ function verificarVelaNova(dados) {
   return minutoVela === minutoAtual || minutoVela === (minutoAtual - 1 + 60) % 60;
 }
 
-// =============================================  
-// INDICADORES  
-// =============================================  
 const calcularMedia = {
   simples: (dados, periodo) => {
     const slice = dados.slice(-periodo);
@@ -177,24 +171,24 @@ function avaliarTendencia(closes, highs, lows, volumes) {
   const volumeMedio = calcularMedia.simples(volumes, CONFIG.PERIODOS.SMA_VOLUME);
   if (volumeAtual > volumeMedio * CONFIG.LIMIARES.VOLUME_ALTO) forca += 20;
   return { tendencia: direcao, forca };
-  
-} function gerarSinal(indicadores) {
-  const { rsi, stoch, macd, close, emaCurta, emaMedia, volume, volumeMedia, superTrend, tendencia } = indicadores;
+}
+
+function gerarSinal(indicadores) {
+  const { rsi, macd, close, emaCurta, emaMedia, volume, volumeMedia, superTrend, tendencia } = indicadores;
   let callScore = 0, putScore = 0;
-
-  if (tendencia.tendencia.includes("ALTA")) callScore += 1;
+  if (tendencia.tendencia.includes("ALTA")) callScore++;
   if (close > emaCurta && close > emaMedia) callScore += 2;
-  if (macd.histograma > 0 && macd.macdLinha > 0) callScore += 1;
-  if (rsi < 40) callScore += 1;
-  if (volume > volumeMedia) callScore += 1;
-  if (superTrend.direcao > 0) callScore += 1;
+  if (macd.histograma > 0 && macd.macdLinha > 0) callScore++;
+  if (rsi < 40) callScore++;
+  if (volume > volumeMedia) callScore++;
+  if (superTrend.direcao > 0) callScore++;
 
-  if (tendencia.tendencia.includes("BAIXA")) putScore += 1;
+  if (tendencia.tendencia.includes("BAIXA")) putScore++;
   if (close < emaCurta && close < emaMedia) putScore += 2;
-  if (macd.histograma < 0 && macd.macdLinha < 0) putScore += 1;
-  if (rsi > 60) putScore += 1;
-  if (volume > volumeMedia) putScore += 1;
-  if (superTrend.direcao < 0) putScore += 1;
+  if (macd.histograma < 0 && macd.macdLinha < 0) putScore++;
+  if (rsi > 60) putScore++;
+  if (volume > volumeMedia) putScore++;
+  if (superTrend.direcao < 0) putScore++;
 
   if (callScore >= 1 && callScore >= putScore) return "CALL";
   if (putScore >= 1 && putScore >= callScore) return "PUT";
@@ -231,12 +225,7 @@ async function obterDadosTwelveData() {
 
 async function analisarMercado() {
   if (!state.mercadoAberto || state.leituraEmAndamento) return;
-  const agora = new Date();
-  const minutoAtual = agora.getMinutes();
-  if (minutoAtual === state.ultimoMinutoProcessado) return;
-
   state.leituraEmAndamento = true;
-  state.ultimoMinutoProcessado = minutoAtual;
   try {
     const dados = await obterDadosTwelveData();
     if (!dados.length || !verificarVelaNova(dados)) {
@@ -251,25 +240,20 @@ async function analisarMercado() {
     const volumes = dados.map(v => v.volume);
 
     const rsi = calcularRSI(closes);
-    const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
     const superTrend = calcularSuperTrend(dados);
     const tendencia = avaliarTendencia(closes, highs, lows, volumes);
+    const emaCurta = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA).pop();
+    const emaMedia = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA).pop();
+    const volumeMedia = calcularMedia.simples(volumes, CONFIG.PERIODOS.SMA_VOLUME);
 
-    const emaCurta = calcularMedia.exponencial(closes.slice(-30), CONFIG.PERIODOS.EMA_CURTA).pop();
-    const emaMedia = calcularMedia.exponencial(closes.slice(-30), CONFIG.PERIODOS.EMA_MEDIA).pop();
-    const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME);
-
-    const indicadores = { rsi, stoch, macd, close: velaAtual.close, emaCurta, emaMedia, volume: velaAtual.volume, volumeMedia, superTrend, tendencia };
+    const indicadores = { rsi, macd, close: velaAtual.close, emaCurta, emaMedia, volume: velaAtual.volume, volumeMedia, superTrend, tendencia };
     const sinal = gerarSinal(indicadores);
     const score = sinal === "ESPERAR" ? 0 : Math.min(100, 60 + (tendencia.forca * 0.3) + (Math.abs(macd.histograma) * 10000) + (velaAtual.volume > volumeMedia * CONFIG.LIMIARES.VOLUME_ALTO ? 15 : 0));
 
+    state.ultimoMinutoProcessado = new Date().getMinutes();
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
-    state.tendenciaAtual = tendencia.tendencia;
-    state.forcaTendencia = tendencia.forca;
-    state.ultimaAtualizacao = agora.toLocaleTimeString("pt-BR");
-    state.ultimaVelaProcessada = velaAtual.time;
 
     const comandoElement = document.getElementById("comando");
     const scoreElement = document.getElementById("score");
@@ -291,11 +275,8 @@ async function analisarMercado() {
     if (horaElement) {
       horaElement.textContent = state.ultimaAtualizacao;
     }
-
   } catch (error) {
     console.error("Erro na análise:", error);
-    state.tentativasErro++;
-    if (state.tentativasErro > 2) setTimeout(() => location.reload(), 5000);
   } finally {
     state.leituraEmAndamento = false;
   }
@@ -314,9 +295,6 @@ function gerenciarTimer() {
   if (state.timer >= 58 && !state.leituraEmAndamento) {
     analisarMercado();
   }
-  if (state.timer === 59 && state.ultimoMinutoProcessado !== agora.getMinutes()) {
-    analisarMercado();
-  }
 }
 
 function verificarDependencias() {
@@ -331,14 +309,9 @@ function verificarDependencias() {
 
 function iniciarAplicativo() {
   if (!verificarDependencias()) return;
-  console.log("Robô EUR/USD M1 iniciado...");
-  state.mercadoAberto = true;
   setInterval(atualizarRelogio, 1000);
   setInterval(gerenciarTimer, 1000);
-  setTimeout(() => {
-    state.ultimoMinutoProcessado = -1;
-    analisarMercado();
-  }, 1500);
+  setTimeout(() => analisarMercado(), 1500);
   setInterval(() => {
     console.log("Status:", {
       sinal: state.ultimoSinal,
@@ -348,8 +321,5 @@ function iniciarAplicativo() {
   }, 30000);
 }
 
-if (document.readyState === "complete") {
-  iniciarAplicativo();
-} else {
-  document.addEventListener("DOMContentLoaded", iniciarAplicativo);
-}
+if (document.readyState === "complete") iniciarAplicativo();
+else document.addEventListener("DOMContentLoaded", iniciarAplicativo);
