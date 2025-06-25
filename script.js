@@ -73,14 +73,13 @@ function atualizarRelogio() {
 function verificarVelaNova(dados) {
   if (!dados || dados.length === 0) return false;
   
-  const ultimaVela = dados[dados.length - 1];
-  const timestamp = new Date(ultimaVela.time).getTime();
+  const agora = new Date();
+  const minutoAtual = agora.getMinutes();
   
-  if (!state.ultimaVelaProcessada || timestamp > state.ultimaVelaProcessada) {
-    state.ultimaVelaProcessada = timestamp;
-    return true;
-  }
-  return false;
+  const ultimaVela = dados[dados.length - 1];
+  const velaTime = new Date(ultimaVela.time);
+  
+  return velaTime.getMinutes() === minutoAtual;
 }
 
 // =============================================
@@ -294,32 +293,26 @@ function gerarSinal(indicadores) {
     let callScore = 0, putScore = 0;
     
     // Regras para CALL
-    if (tendencia.tendencia.includes("ALTA")) callScore += 2;
-    if (close > emaCurta) callScore += 1;
-    if (macd.histograma > 0) callScore += 1;
-    if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD) callScore += 1;
-    if (volume > volumeMedia * CONFIG.LIMIARES.VOLUME_ALTO) callScore += 1;
+    if (tendencia.tendencia.includes("ALTA")) callScore += 1;
+    if (close > emaCurta && close > emaMedia) callScore += 2;
+    if (macd.histograma > 0 && macd.macdLinha > 0) callScore += 1;
+    if (rsi < 40) callScore += 1;
+    if (volume > volumeMedia) callScore += 1;
     if (superTrend.direcao > 0) callScore += 1;
     
     // Regras para PUT
-    if (tendencia.tendencia.includes("BAIXA")) putScore += 2;
-    if (close < emaCurta) putScore += 1;
-    if (macd.histograma < 0) putScore += 1;
-    if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT) putScore += 1;
-    if (volume > volumeMedia * CONFIG.LIMIARES.VOLUME_ALTO) putScore += 1;
+    if (tendencia.tendencia.includes("BAIXA")) putScore += 1;
+    if (close < emaCurta && close < emaMedia) putScore += 2;
+    if (macd.histograma < 0 && macd.macdLinha < 0) putScore += 1;
+    if (rsi > 60) putScore += 1;
+    if (volume > volumeMedia) putScore += 1;
     if (superTrend.direcao < 0) putScore += 1;
     
     console.log("Pontuações:", {callScore, putScore});
     
-    // Regra especial para tendências fortes
-    if (tendencia.forca > 80) {
-      if (tendencia.tendencia.includes("ALTA") && callScore >= 2) return "CALL";
-      if (tendencia.tendencia.includes("BAIXA") && putScore >= 2) return "PUT";
-    }
-    
     // Determinar sinal
-    if (callScore >= 3 && callScore > putScore) return "CALL";
-    if (putScore >= 3 && putScore > callScore) return "PUT";
+    if (callScore >= 2 && callScore > putScore) return "CALL";
+    if (putScore >= 2 && putScore > callScore) return "PUT";
     
     return "ESPERAR";
     
@@ -424,14 +417,21 @@ async function analisarMercado() {
     const superTrend = calcularSuperTrend(dados);
     const tendencia = avaliarTendencia(closes, highs, lows, volumes);
     
-    console.log("Indicadores calculados:", {
+    console.log("Detalhes da Análise:", {
       rsi, 
       stochK: stoch.k, 
       stochD: stoch.d,
       macdHist: macd.histograma,
+      macdLinha: macd.macdLinha,
+      sinalLinha: macd.sinalLinha,
       superTrend: superTrend.direcao,
       tendencia: tendencia.tendencia,
-      forcaTendencia: tendencia.forca
+      forca: tendencia.forca,
+      close: velaAtual.close,
+      emaCurta: calcularMedia.exponencial(closes.slice(-30), CONFIG.PERIODOS.EMA_CURTA).pop() || velaAtual.close,
+      emaMedia: calcularMedia.exponencial(closes.slice(-30), CONFIG.PERIODOS.EMA_MEDIA).pop() || velaAtual.close,
+      volume: velaAtual.volume,
+      volumeMedia: calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME)
     });
     
     // Gerar sinal
@@ -509,8 +509,8 @@ function gerenciarTimer() {
     timerElement.style.color = state.timer <= 10 ? '#FF0000' : '#00FF00';
   }
   
-  // Disparar análise no segundo 58 para garantir sincronia
-  if (state.timer === 2 && !state.leituraEmAndamento) {
+  // Disparar análise no segundo 02 do novo minuto
+  if (state.timer === 58 && !state.leituraEmAndamento) {
     analisarMercado();
   }
   
