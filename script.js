@@ -1,5 +1,5 @@
 // =============================================
-// CONFIGURAÇÕES GLOBAIS PARA EURUSD M1 (ATUALIZADO)
+// CONFIGURAÇÕES GLOBAIS PARA EURUSD M1 (REVISADO)
 // =============================================
 const state = {
   ultimosSinais: [],
@@ -13,7 +13,8 @@ const state = {
   tendenciaAtual: "NEUTRA",
   forcaTendencia: 0,
   ultimaVelaProcessada: null,
-  mercadoAberto: true
+  mercadoAberto: true,
+  ultimoMinutoProcessado: -1
 };
 
 const CONFIG = {
@@ -52,7 +53,7 @@ const CONFIG = {
 };
 
 // =============================================
-// FUNÇÕES UTILITÁRIAS (CORRIGIDAS)
+// FUNÇÕES UTILITÁRIAS (REVISADAS)
 // =============================================
 function formatarTimer(segundos) {
   return `0:${segundos.toString().padStart(2, '0')}`;
@@ -83,7 +84,7 @@ function verificarVelaNova(dados) {
 }
 
 // =============================================
-// CÁLCULO DE INDICADORES (OTIMIZADO)
+// CÁLCULO DE INDICADORES (REVISADO)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -218,7 +219,6 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
     const ultimo = dados[dados.length - 1];
     const hl2 = (ultimo.high + ultimo.low) / 2;
     
-    // Versão simplificada sem dependência de estado anterior
     const upper = hl2 + (multiplicador * atr);
     const lower = hl2 - (multiplicador * atr);
     
@@ -233,13 +233,12 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
 }
 
 // =============================================
-// SISTEMA DE TENDÊNCIA (CORRIGIDO)
+// SISTEMA DE TENDÊNCIA (REVISADO)
 // =============================================
 function avaliarTendencia(closes, highs, lows, volumes) {
   try {
     if (!Array.isArray(closes) || closes.length < 50) return { tendencia: "NEUTRA", forca: 0 };
     
-    // Usar apenas os últimos dados necessários
     const sliceSize = Math.max(50, CONFIG.PERIODOS.EMA_LONGA);
     const slicedCloses = closes.slice(-sliceSize);
     
@@ -285,7 +284,7 @@ function avaliarTendencia(closes, highs, lows, volumes) {
 }
 
 // =============================================
-// GERADOR DE SINAIS (ATUALIZADO)
+// GERADOR DE SINAIS (REVISADO)
 // =============================================
 function gerarSinal(indicadores) {
   try {
@@ -310,13 +309,15 @@ function gerarSinal(indicadores) {
     if (volume > volumeMedia * CONFIG.LIMIARES.VOLUME_ALTO) putScore += 1;
     if (superTrend.direcao < 0) putScore += 1;
     
+    console.log("Pontuações:", {callScore, putScore});
+    
     // Regra especial para tendências fortes
     if (tendencia.forca > 80) {
       if (tendencia.tendencia.includes("ALTA") && callScore >= 2) return "CALL";
       if (tendencia.tendencia.includes("BAIXA") && putScore >= 2) return "PUT";
     }
     
-    // Determinar sinal (limite reduzido para 3 pontos)
+    // Determinar sinal
     if (callScore >= 3 && callScore > putScore) return "CALL";
     if (putScore >= 3 && putScore > callScore) return "PUT";
     
@@ -329,7 +330,7 @@ function gerarSinal(indicadores) {
 }
 
 // =============================================
-// CORE DO SISTEMA (COM VALIDAÇÕES)
+// CORE DO SISTEMA (REVISADO)
 // =============================================
 async function obterDadosTwelveData() {
   const controller = new AbortController();
@@ -353,7 +354,7 @@ async function obterDadosTwelveData() {
       throw new Error("Formato de dados inválido");
     }
     
-    return data.values.map(item => ({
+    const dados = data.values.map(item => ({
       time: item.datetime,
       open: parseFloat(item.open),
       high: parseFloat(item.high),
@@ -361,6 +362,9 @@ async function obterDadosTwelveData() {
       close: parseFloat(item.close),
       volume: parseFloat(item.volume || 1)
     })).reverse();
+    
+    console.log(`Dados recebidos: ${dados.length} velas | Última vela: ${dados[dados.length-1]?.time}`);
+    return dados;
     
   } catch (error) {
     clearTimeout(timeoutId);
@@ -375,17 +379,34 @@ async function obterDadosTwelveData() {
 }
 
 async function analisarMercado() {
-  if (state.leituraEmAndamento || !state.mercadoAberto) return;
+  if (state.leituraEmAndamento) {
+    console.log("Análise já em andamento. Ignorando chamada.");
+    return;
+  }
+  
+  const agora = new Date();
+  const minutoAtual = agora.getMinutes();
+  
+  // Verificar se já analisamos este minuto
+  if (minutoAtual === state.ultimoMinutoProcessado) {
+    console.log("Minuto já processado. Ignorando análise.");
+    return;
+  }
+  
   state.leituraEmAndamento = true;
+  state.ultimoMinutoProcessado = minutoAtual;
+  console.log(`Iniciando análise para minuto: ${minutoAtual}`);
   
   try {
     const dados = await obterDadosTwelveData();
     if (!dados || dados.length === 0) {
+      console.log("Nenhum dado recebido da API");
       state.leituraEmAndamento = false;
       return;
     }
     
     if (!verificarVelaNova(dados)) {
+      console.log("Nenhuma vela nova detectada");
       state.leituraEmAndamento = false;
       return;
     }
@@ -402,6 +423,16 @@ async function analisarMercado() {
     const macd = calcularMACD(closes);
     const superTrend = calcularSuperTrend(dados);
     const tendencia = avaliarTendencia(closes, highs, lows, volumes);
+    
+    console.log("Indicadores calculados:", {
+      rsi, 
+      stochK: stoch.k, 
+      stochD: stoch.d,
+      macdHist: macd.histograma,
+      superTrend: superTrend.direcao,
+      tendencia: tendencia.tendencia,
+      forcaTendencia: tendencia.forca
+    });
     
     // Gerar sinal
     const indicadores = {
@@ -428,39 +459,34 @@ async function analisarMercado() {
     state.ultimoScore = score;
     state.tendenciaAtual = tendencia.tendencia;
     state.forcaTendencia = tendencia.forca;
-    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
+    state.ultimaAtualizacao = agora.toLocaleTimeString("pt-BR");
     
     // Atualizar interface
     const comandoElement = document.getElementById("comando");
     const scoreElement = document.getElementById("score");
+    const timerElement = document.getElementById("timer");
+    const horaElement = document.getElementById("hora");
     
-    if (comandoElement && scoreElement) {
+    if (comandoElement) {
       comandoElement.textContent = sinal;
       comandoElement.className = sinal.toLowerCase();
-      
+    }
+    
+    if (scoreElement) {
       scoreElement.textContent = `Confiança: ${score}%`;
       scoreElement.style.color = score >= CONFIG.LIMIARES.SCORE_ALTO ? '#00FF00' : 
                                 score >= CONFIG.LIMIARES.SCORE_MEDIO ? '#FFFF00' : '#FF0000';
     }
     
-    // Log detalhado para depuração
-    console.log("Análise concluída:", {
-      time: new Date().toISOString(),
-      signal: sinal,
-      score,
-      trend: tendencia.tendencia,
-      trendStrength: tendencia.forca,
-      rsi,
-      stochK: stoch.k,
-      stochD: stoch.d,
-      macdHist: macd.histograma,
-      ema5: indicadores.emaCurta,
-      ema13: indicadores.emaMedia,
-      volumeRatio: (indicadores.volume / indicadores.volumeMedia).toFixed(2),
-      superTrendDir: superTrend.direcao,
-      callScore: indicadores.callScore,
-      putScore: indicadores.putScore
-    });
+    if (timerElement) {
+      timerElement.textContent = formatarTimer(state.timer);
+    }
+    
+    if (horaElement) {
+      horaElement.textContent = state.ultimaAtualizacao;
+    }
+    
+    console.log(`Sinal gerado: ${sinal} (${score}%)`);
     
   } catch (error) {
     console.error("Erro na análise:", error);
@@ -470,31 +496,33 @@ async function analisarMercado() {
 }
 
 // =============================================
-// CONTROLE DE TEMPO (OTIMIZADO)
+// CONTROLE DE TEMPO (REVISADO)
 // =============================================
-function sincronizarTimer() {
-  clearTimeout(state.intervaloAtual);
-  
-  // Disparar análise a cada minuto
+function gerenciarTimer() {
   const agora = new Date();
-  const msAteProximoMinuto = 60000 - (agora.getSeconds() * 1000 + agora.getMilliseconds());
+  const segundos = agora.getSeconds();
+  state.timer = 60 - segundos;
   
-  state.intervaloAtual = setTimeout(() => {
-    analisarMercado();
-    sincronizarTimer(); // Reagendar para o próximo minuto
-  }, msAteProximoMinuto);
-  
-  // Atualizar contador visual
-  state.timer = Math.floor(msAteProximoMinuto / 1000);
   const timerElement = document.getElementById("timer");
   if (timerElement) {
     timerElement.textContent = formatarTimer(state.timer);
     timerElement.style.color = state.timer <= 10 ? '#FF0000' : '#00FF00';
   }
+  
+  // Disparar análise no segundo 58 para garantir sincronia
+  if (state.timer === 2 && !state.leituraEmAndamento) {
+    analisarMercado();
+  }
+  
+  // Verificar se perdeu o minuto
+  if (state.timer === 59 && state.ultimoMinutoProcessado !== agora.getMinutes()) {
+    console.log("Recuperando minuto perdido...");
+    analisarMercado();
+  }
 }
 
 // =============================================
-// INICIALIZAÇÃO (COM VERIFICAÇÕES)
+// INICIALIZAÇÃO (REVISADA)
 // =============================================
 function verificarDependencias() {
   const elementosNecessarios = ['comando', 'score', 'hora', 'timer'];
@@ -516,13 +544,17 @@ function iniciarAplicativo() {
   console.log("Iniciando aplicativo EURUSD M1...");
   state.mercadoAberto = true;
   state.ultimaVelaProcessada = null;
+  state.ultimoMinutoProcessado = -1;
   
   // Configurações iniciais
   setInterval(atualizarRelogio, 1000);
-  sincronizarTimer();
+  setInterval(gerenciarTimer, 1000);
   
   // Primeira análise
-  setTimeout(() => analisarMercado(), 2000);
+  setTimeout(() => {
+    analisarMercado();
+    console.log("Primeira análise concluída");
+  }, 2000);
   
   // Monitoramento de saúde
   setInterval(() => {
@@ -532,7 +564,7 @@ function iniciarAplicativo() {
       tentativasErro: state.tentativasErro,
       memoria: window.performance?.memory?.usedJSHeapSize || 'N/A'
     });
-  }, 60000);
+  }, 30000);
 }
 
 // Iniciar quando o DOM estiver pronto
