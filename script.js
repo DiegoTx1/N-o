@@ -1,5 +1,5 @@
 // =============================================
-// CONFIGURAÇÕES GLOBAIS PARA EURUSD M1
+// CONFIGURAÇÕES GLOBAIS PARA EURUSD M1 (ATUALIZADO)
 // =============================================
 const state = {
   ultimosSinais: [],
@@ -17,10 +17,10 @@ const state = {
 };
 
 const CONFIG = {
-  API_KEY: "c856b9a3b0msh1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p",
+  API_KEY: "9cf795b2a4f14d43a049ca935d174ebb",
   API_ENDPOINT: "https://twelvedata.p.rapidapi.com",
   HEADERS: {
-    "X-RapidAPI-Key": "c856b9a3b0msh1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p",
+    "X-RapidAPI-Key": "9cf795b2a4f14d43a049ca935d174ebb",
     "X-RapidAPI-Host": "twelvedata.p.rapidapi.com"
   },
   PARES: {
@@ -52,7 +52,7 @@ const CONFIG = {
 };
 
 // =============================================
-// FUNÇÕES UTILITÁRIAS
+// FUNÇÕES UTILITÁRIAS (CORRIGIDAS)
 // =============================================
 function formatarTimer(segundos) {
   return `0:${segundos.toString().padStart(2, '0')}`;
@@ -70,7 +70,7 @@ function atualizarRelogio() {
 }
 
 function verificarVelaNova(dados) {
-  if (!dados || dados.length === 0) return false;
+  if (!dados || dados.length === 0 || !dados[dados.length - 1]) return false;
   const ultimaVela = dados[dados.length - 1];
   if (ultimaVela.time !== state.ultimaVelaProcessada) {
     state.ultimaVelaProcessada = ultimaVela.time;
@@ -80,18 +80,18 @@ function verificarVelaNova(dados) {
 }
 
 // =============================================
-// CÁLCULO DE INDICADORES
+// CÁLCULO DE INDICADORES (OTIMIZADO)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
-    if (!Array.isArray(dados) return 0;
+    if (!Array.isArray(dados) || dados.length === 0) return 0;
     const slice = dados.slice(-periodo);
     if (slice.length === 0) return 0;
     return slice.reduce((a, b) => a + b, 0) / slice.length;
   },
 
   exponencial: (dados, periodo) => {
-    if (!Array.isArray(dados) return [];
+    if (!Array.isArray(dados) || dados.length === 0) return [];
     if (dados.length < periodo) return Array(dados.length).fill(0);
     
     const k = 2 / (periodo + 1);
@@ -135,7 +135,7 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
 
 function calcularStochastic(highs, lows, closes, periodo = CONFIG.PERIODOS.STOCH) {
   try {
-    if (!Array.isArray(closes) return { k: 50, d: 50 };
+    if (!Array.isArray(closes) || closes.length < periodo) return { k: 50, d: 50 };
     
     const kValues = [];
     for (let i = periodo - 1; i < closes.length; i++) {
@@ -187,7 +187,7 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
 
 function calcularATR(dados, periodo = CONFIG.PERIODOS.ATR) {
   try {
-    if (!Array.isArray(dados) return 0;
+    if (!Array.isArray(dados) || dados.length < 2) return 0;
     
     const trValues = [];
     for (let i = 1; i < dados.length; i++) {
@@ -208,9 +208,9 @@ function calcularATR(dados, periodo = CONFIG.PERIODOS.ATR) {
 
 function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multiplicador = 3) {
   try {
-    if (!Array.isArray(dados)) return { direcao: 0, valor: 0 };
+    if (!Array.isArray(dados) || dados.length === 0) return { direcao: 0, valor: 0 };
     
-    const atr = calcularATR(dados, periodo);
+    const atr = calcularATR(dados, periodo) || 0.0001;
     const ultimo = dados[dados.length - 1];
     const hl2 = (ultimo.high + ultimo.low) / 2;
     const upper = hl2 + (multiplicador * atr);
@@ -238,11 +238,11 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
 }
 
 // =============================================
-// SISTEMA DE TENDÊNCIA
+// SISTEMA DE TENDÊNCIA (CORRIGIDO)
 // =============================================
 function avaliarTendencia(closes, highs, lows, volumes) {
   try {
-    if (!Array.isArray(closes)) return { tendencia: "NEUTRA", forca: 0 };
+    if (!Array.isArray(closes) || closes.length < 50) return { tendencia: "NEUTRA", forca: 0 };
     
     const ema5 = calcularMedia.exponencial(closes, 5).pop();
     const ema13 = calcularMedia.exponencial(closes, 13).pop();
@@ -264,7 +264,9 @@ function avaliarTendencia(closes, highs, lows, volumes) {
     // Confirmação de volume
     const volumeAtual = volumes[volumes.length - 1];
     const volumeMedio = calcularMedia.simples(volumes.slice(-20), 20);
-    if (volumeAtual > volumeMedio * 1.5) forca = Math.min(100, forca + 20);
+    if (volumeAtual > volumeMedio * CONFIG.LIMIARES.VOLUME_ALTO) {
+      forca = Math.min(100, forca + 20);
+    }
     
     // Classificação final
     if (forca >= 70) return { tendencia: `FORTE_${direcao}`, forca };
@@ -278,7 +280,7 @@ function avaliarTendencia(closes, highs, lows, volumes) {
 }
 
 // =============================================
-// GERADOR DE SINAIS
+// GERADOR DE SINAIS (ATUALIZADO)
 // =============================================
 function gerarSinal(indicadores) {
   try {
@@ -297,7 +299,7 @@ function gerarSinal(indicadores) {
     if (close > emaCurta) callScore += 1;
     if (macd.histograma > 0) callScore += 1;
     if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD) callScore += 1;
-    if (volume > volumeMedia * 1.3) callScore += 1;
+    if (volume > volumeMedia * CONFIG.LIMIARES.VOLUME_ALTO) callScore += 1;
     if (superTrend.direcao > 0) callScore += 1;
     
     // Regras para PUT
@@ -305,7 +307,7 @@ function gerarSinal(indicadores) {
     if (close < emaCurta) putScore += 1;
     if (macd.histograma < 0) putScore += 1;
     if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT) putScore += 1;
-    if (volume > volumeMedia * 1.3) putScore += 1;
+    if (volume > volumeMedia * CONFIG.LIMIARES.VOLUME_ALTO) putScore += 1;
     if (superTrend.direcao < 0) putScore += 1;
     
     // Determinar sinal
@@ -321,7 +323,7 @@ function gerarSinal(indicadores) {
 }
 
 // =============================================
-// CORE DO SISTEMA
+// CORE DO SISTEMA (COM VALIDAÇÕES)
 // =============================================
 async function obterDadosTwelveData() {
   const controller = new AbortController();
@@ -367,6 +369,11 @@ async function analisarMercado() {
   
   try {
     const dados = await obterDadosTwelveData();
+    if (!dados || dados.length === 0) {
+      state.leituraEmAndamento = false;
+      return;
+    }
+    
     if (!verificarVelaNova(dados)) {
       state.leituraEmAndamento = false;
       return;
@@ -401,7 +408,7 @@ async function analisarMercado() {
     const score = sinal === "ESPERAR" ? 0 : Math.min(100, 60 +
       (tendencia.forca * 0.3) +
       (Math.abs(macd.histograma) * 10000) +
-      (volume > volumeMedia * 1.5 ? 15 : 0));
+      (indicadores.volume > indicadores.volumeMedia * CONFIG.LIMIARES.VOLUME_ALTO ? 15 : 0));
     
     // Atualizar estado
     state.ultimoSinal = sinal;
@@ -410,19 +417,19 @@ async function analisarMercado() {
     state.forcaTendencia = tendencia.forca;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
     
-    // Atualizar interface
+    // Atualizar interface com verificações
     const comandoElement = document.getElementById("comando");
     const scoreElement = document.getElementById("score");
     
-    if (comandoElement) {
+    if (comandoElement && scoreElement) {
       comandoElement.textContent = sinal;
       comandoElement.className = sinal.toLowerCase();
-    }
-    
-    if (scoreElement) {
+      
       scoreElement.textContent = `Confiança: ${score}%`;
       scoreElement.style.color = score >= 85 ? '#00FF00' : 
                                 score >= 70 ? '#FFFF00' : '#FF0000';
+    } else {
+      console.error("Elementos da interface não encontrados!");
     }
     
     console.log("Análise concluída:", {
@@ -446,10 +453,17 @@ async function analisarMercado() {
 }
 
 // =============================================
-// CONTROLE DE TEMPO
+// CONTROLE DE TEMPO (OTIMIZADO)
 // =============================================
 function sincronizarTimer() {
   clearTimeout(state.intervaloAtual);
+  
+  // Evitar sobreposição de análises
+  if (state.leituraEmAndamento) {
+    state.intervaloAtual = setTimeout(sincronizarTimer, 1000);
+    return;
+  }
+  
   const agora = new Date();
   const segundos = agora.getSeconds();
   state.timer = 60 - segundos;
@@ -470,7 +484,7 @@ function sincronizarTimer() {
 }
 
 // =============================================
-// INICIALIZAÇÃO
+// INICIALIZAÇÃO (COM VERIFICAÇÕES)
 // =============================================
 function verificarDependencias() {
   const elementosNecessarios = ['comando', 'score', 'hora', 'timer'];
