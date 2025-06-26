@@ -1,5 +1,5 @@
 // =============================================
-// CONFIGURAÇÕES GLOBAIS COM SUA CHAVE API REAL
+// CONFIGURAÇÕES GLOBAIS COM URLS CORRETAS
 // =============================================
 const state = {
   ultimos: [],
@@ -32,12 +32,12 @@ const state = {
 const CONFIG = {
   API_ENDPOINTS: {
     TWELVE_DATA: "https://api.twelvedata.com",
-    CALENDARIO: "https://fiscaldataapi.com"
+    CALENDARIO: "https://api.twelvedata.com/economic_calendar"
   },
   PARES: {
     FOREX_IDX: "EUR/USD"
   },
-  SUA_CHAVE_API: "9cf795b2a4f14d43a049ca935d174ebb", // SUA CHAVE REAL
+  SUA_CHAVE_API: "9cf795b2a4f14d43a049ca935d174ebb",
   PERIODOS: {
     RSI: 14,
     STOCH: 14,
@@ -301,31 +301,33 @@ function calcularGestaoRisco(sinal, close, atr) {
 }
 
 // =============================================
-// FILTRO DE NOTÍCIAS
+// FILTRO DE NOTÍCIAS (CORRIGIDO)
 // =============================================
 async function verificarNoticias() {
   try {
-    const response = await fetch(`${CONFIG.API_ENDPOINTS.CALENDARIO}/economic-events?min_importance=2`);
+    const response = await fetch(`${CONFIG.API_ENDPOINTS.CALENDARIO}?apikey=${CONFIG.SUA_CHAVE_API}&min_importance=2`);
     if (!response.ok) throw new Error("Erro no calendário");
     
-    const eventos = await response.json();
+    const data = await response.json();
     const agora = new Date();
-    const agoraUTC = agora.toISOString();
     
-    state.noticiasRecentes = eventos.filter(evento => {
-      const diffHoras = (new Date(evento.date) - new Date(agoraUTC)) / (1000 * 60 * 60);
+    if (!data.data) throw new Error("Formato de dados inválido");
+    
+    state.noticiasRecentes = data.data.filter(evento => {
+      const dataEvento = new Date(evento.date);
+      const diffHoras = (dataEvento - agora) / (1000 * 60 * 60);
       return diffHoras > 0 && diffHoras < 4;
     });
     
     return state.noticiasRecentes.length === 0;
   } catch (e) {
     console.error("Erro ao verificar notícias:", e);
-    return true;
+    return true; // Ignora notícias em caso de erro
   }
 }
 
 // =============================================
-// INDICADORES TÉCNICOS (CORRIGIDOS)
+// INDICADORES TÉCNICOS (COMPLETOS)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -509,12 +511,14 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
       
       if (prev.close > superTrend) {
         direcao = 1;
+        superTrend = Math.max(upperBand, prev.superTrend || upperBand);
       } else {
         direcao = -1;
+        superTrend = Math.min(lowerBand, prev.superTrend || lowerBand);
       }
     }
     
-    return { direcao, valor: direcao === 1 ? lowerBand : upperBand };
+    return { direcao, valor: superTrend };
   } catch (e) {
     console.error("Erro no cálculo SuperTrend:", e);
     return { direcao: 0, valor: 0 };
@@ -707,7 +711,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
 }
 
 // =============================================
-// CORE DO SISTEMA - OPERAÇÃO REAL (CORRIGIDO)
+// CORE DO SISTEMA - OPERAÇÃO REAL
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
@@ -737,7 +741,7 @@ async function analisarMercado() {
     const lows = dados.map(v => v.low);
     const volumes = dados.map(v => v.volume);
 
-    // Adicionadas verificações de segurança
+    // Verificação de dados mínimos
     if (closes.length < 50) {
       throw new Error("Dados insuficientes para análise");
     }
@@ -794,7 +798,6 @@ async function analisarMercado() {
 
     atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
 
-    // Simulação de sons de alerta
     if (sinal === "CALL") console.log("PLAY SOUND: CALL");
     else if (sinal === "PUT") console.log("PLAY SOUND: PUT");
 
@@ -824,7 +827,7 @@ function registrar(resultado) {
 }
 
 // =============================================
-// FUNÇÕES DE DADOS - COM SUA CHAVE API REAL
+// FUNÇÕES DE DADOS - COM URLS CORRETAS
 // =============================================
 async function obterDadosTwelveData() {
   try {
@@ -891,11 +894,12 @@ function iniciarAplicativo() {
   setInterval(atualizarRelogio, 1000);
   setTimeout(analisarMercado, 2000);
   
-  // Monitoramento de memória
+  // Monitoramento de desempenho
   setInterval(() => {
-    console.log("Monitor: ", {
+    console.log("Monitoramento: ", {
       memoria: window.performance.memory,
-      tempo: new Date().toLocaleTimeString()
+      tempo: new Date().toLocaleTimeString(),
+      status: state.apiStatus
     });
   }, 30000);
 }
