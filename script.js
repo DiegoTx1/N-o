@@ -59,8 +59,8 @@ const CONFIG = {
     ADX: 14
   },
   LIMIARES: {
-    SCORE_ALTO: 75,  // REDUZIDO PARA GERAR MAIS SINAIS
-    SCORE_MEDIO: 60,  // REDUZIDO PARA GERAR MAIS SINAIS
+    SCORE_ALTO: 75,
+    SCORE_MEDIO: 60,
     RSI_OVERBOUGHT: 72,
     RSI_OVERSOLD: 28,
     STOCH_OVERBOUGHT: 82,
@@ -195,7 +195,6 @@ function gerarSinal(indicadores, divergencias) {
       adx > CONFIG.LIMIARES.ADX_FORTE
     ];
     
-    // REDUZIDO DE 5 PARA 3 CONDIÇÕES NECESSÁRIAS
     if (condicoesCompra.filter(Boolean).length >= 3) return "CALL";
   }
   
@@ -209,7 +208,6 @@ function gerarSinal(indicadores, divergencias) {
       adx > CONFIG.LIMIARES.ADX_FORTE
     ];
     
-    // REDUZIDO DE 5 PARA 3 CONDIÇÕES NECESSÁRIAS
     if (condicoesVenda.filter(Boolean).length >= 3) return "PUT";
   }
   
@@ -327,7 +325,7 @@ async function verificarNoticias() {
 }
 
 // =============================================
-// INDICADORES TÉCNICOS
+// INDICADORES TÉCNICOS (CORRIGIDOS)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -511,14 +509,12 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
       
       if (prev.close > superTrend) {
         direcao = 1;
-        superTrend = Math.max(upperBand, prev.superTrend || upperBand);
       } else {
         direcao = -1;
-        superTrend = Math.min(lowerBand, prev.superTrend || lowerBand);
       }
     }
     
-    return { direcao, valor: superTrend };
+    return { direcao, valor: direcao === 1 ? lowerBand : upperBand };
   } catch (e) {
     console.error("Erro no cálculo SuperTrend:", e);
     return { direcao: 0, valor: 0 };
@@ -631,7 +627,7 @@ function calcularADX(highs, lows, closes, periodo = CONFIG.PERIODOS.ADX) {
       highs[i] - lows[i],
       Math.abs(highs[i] - closes[i-1]),
       Math.abs(lows[i] - closes[i-1])
-    );
+    ));
     
     plusDMs.push(highDiff > lowDiff && highDiff > 0 ? highDiff : 0);
     minusDMs.push(lowDiff > highDiff && lowDiff > 0 ? lowDiff : 0);
@@ -711,7 +707,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
 }
 
 // =============================================
-// CORE DO SISTEMA - OPERAÇÃO REAL
+// CORE DO SISTEMA - OPERAÇÃO REAL (CORRIGIDO)
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
@@ -740,6 +736,11 @@ async function analisarMercado() {
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
     const volumes = dados.map(v => v.volume);
+
+    // Adicionadas verificações de segurança
+    if (closes.length < 50) {
+      throw new Error("Dados insuficientes para análise");
+    }
 
     const ema8 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA).pop() || 0;
     const ema21 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA).pop() || 0;
@@ -858,16 +859,26 @@ async function obterDadosTwelveData() {
 function sincronizarTimer() {
   clearInterval(state.intervaloAtual);
   
+  // Atualiza o timer imediatamente
+  const agora = new Date();
+  const segundos = agora.getSeconds();
+  state.timer = 60 - segundos;
+  
+  const elementoTimer = document.getElementById("timer");
+  if (elementoTimer) elementoTimer.textContent = formatarTimer(state.timer);
+  
   state.intervaloAtual = setInterval(() => {
     state.timer--;
     
-    if (document.getElementById("timer")) {
-      document.getElementById("timer").textContent = formatarTimer(state.timer);
-    }
+    if (elementoTimer) elementoTimer.textContent = formatarTimer(state.timer);
     
     if (state.timer <= 0) {
-      analisarMercado();
-      state.timer = 60; // REINICIA O CONTADOR PARA 60s
+      clearInterval(state.intervaloAtual);
+      analisarMercado().finally(() => {
+        // Reinicia o timer após a análise
+        state.timer = 60;
+        sincronizarTimer();
+      });
     }
   }, 1000);
 }
@@ -879,6 +890,14 @@ function iniciarAplicativo() {
   sincronizarTimer();
   setInterval(atualizarRelogio, 1000);
   setTimeout(analisarMercado, 2000);
+  
+  // Monitoramento de memória
+  setInterval(() => {
+    console.log("Monitor: ", {
+      memoria: window.performance.memory,
+      tempo: new Date().toLocaleTimeString()
+    });
+  }, 30000);
 }
 
 // Iniciar quando o documento estiver pronto
