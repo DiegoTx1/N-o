@@ -51,32 +51,42 @@ const CONFIG = {
     LIQUIDITY_ZONES: 20
   },
   LIMIARES: {
-    SCORE_ALTO: 85,  // Aumentado para 85%
+    SCORE_ALTO: 85,
     SCORE_MEDIO: 70,
     RSI_OVERBOUGHT: 70,
     RSI_OVERSOLD: 30,
-    STOCH_OVERBOUGHT: 85,  // Ajustados para forex
+    STOCH_OVERBOUGHT: 85,
     STOCH_OVERSOLD: 15,
-    WILLIAMS_OVERBOUGHT: -15,  // Ajustados para forex
+    WILLIAMS_OVERBOUGHT: -15,
     WILLIAMS_OVERSOLD: -85,
-    VARIACAO_LATERAL: 0.005,  // Mais sensível para forex
-    VWAP_DESVIO: 0.005,       // Mais sensível para forex
-    ATR_LIMIAR: 0.0005        // Mais sensível para forex
+    VARIACAO_LATERAL: 0.005,
+    VWAP_DESVIO: 0.005,
+    ATR_LIMIAR: 0.0005
   },
   PESOS: {
-    RSI: 1.7,        // Aumentados para melhor precisão
+    RSI: 1.7,
     MACD: 2.2,
     TENDENCIA: 2.8,
-    VOLUME: 0.5,     // Reduzido (volume menos relevante em forex)
+    VOLUME: 0.5,
     STOCH: 1.2,
     WILLIAMS: 1.1,
     VWAP: 1.5,
     SUPERTREND: 1.9,
-    VOLUME_PROFILE: 1.2, // Reduzido
+    VOLUME_PROFILE: 1.2,
     DIVERGENCIA: 2.0,
     LIQUIDITY: 1.8
   }
 };
+
+// =============================================
+// GERENCIADOR DE CHAVES API
+// =============================================
+const API_KEYS = [
+  "SUA_CHAVE_API_1",  // SUA PRIMEIRA CHAVE AQUI
+  "SUA_CHAVE_API_2"   // SUA SEGUNDA CHAVE AQUI
+];
+let currentKeyIndex = 0;
+let errorCount = 0;
 
 // =============================================
 // SISTEMA DE TENDÊNCIA OTIMIZADO PARA FOREX
@@ -84,20 +94,15 @@ const CONFIG = {
 function avaliarTendencia(closes, ema8, ema21, ema200) {
   const ultimoClose = closes[closes.length - 1];
   
-  // Tendência de longo prazo
   const tendenciaLongoPrazo = ultimoClose > ema200 ? "ALTA" : "BAIXA";
-  
-  // Tendência de médio prazo
   const tendenciaMedioPrazo = ema8 > ema21 ? "ALTA" : "BAIXA";
   
-  // Força da tendência baseada em EMA
   const distanciaMedia = Math.abs(ema8 - ema21);
   const forcaBase = Math.min(100, Math.round(distanciaMedia / ultimoClose * 10000));
   
   let forcaTotal = forcaBase;
   if (tendenciaLongoPrazo === tendenciaMedioPrazo) forcaTotal += 30;
   
-  // Determinar tendência final
   if (forcaTotal > 80) {
     return { 
       tendencia: tendenciaMedioPrazo === "ALTA" ? "FORTE_ALTA" : "FORTE_BAIXA",
@@ -135,11 +140,9 @@ function gerarSinal(indicadores, divergencias) {
     tendencia
   } = indicadores;
   
-  // Definir níveis-chave de suporte e resistência
   state.suporteKey = Math.min(volumeProfile.vaLow, liquidez.suporte, emaMedia);
   state.resistenciaKey = Math.max(volumeProfile.vaHigh, liquidez.resistencia, emaMedia);
   
-  // 1. Sinal de tendência forte (volume removido)
   if (tendencia.tendencia === "FORTE_ALTA") {
     const condicoesCompra = [
       close > emaCurta,
@@ -153,7 +156,6 @@ function gerarSinal(indicadores, divergencias) {
     }
   }
   
-  // 2. Sinal de tendência forte de baixa (volume removido)
   if (tendencia.tendencia === "FORTE_BAIXA") {
     const condicoesVenda = [
       close < emaCurta,
@@ -167,7 +169,6 @@ function gerarSinal(indicadores, divergencias) {
     }
   }
   
-  // 3. Sinal de rompimento (volume removido)
   const variacao = state.resistenciaKey - state.suporteKey;
   const limiteBreakout = variacao * 0.1;
   
@@ -179,7 +180,6 @@ function gerarSinal(indicadores, divergencias) {
     return "PUT";
   }
   
-  // 4. Sinal de reversão por divergência
   if (divergencias.divergenciaRSI) {
     if (divergencias.tipoDivergencia === "ALTA" && close > state.suporteKey) {
       return "CALL";
@@ -190,7 +190,6 @@ function gerarSinal(indicadores, divergencias) {
     }
   }
   
-  // 5. Sinal de reversão por RSI extremo
   if (rsi < 25 && close > emaMedia) {
     return "CALL";
   }
@@ -206,9 +205,8 @@ function gerarSinal(indicadores, divergencias) {
 // CALCULADOR DE CONFIANÇA PRECISO (OTIMIZADO)
 // =============================================
 function calcularScore(sinal, indicadores, divergencias) {
-  let score = 65; // Base aumentada
+  let score = 65;
 
-  // Fatores gerais otimizados
   const fatores = {
     alinhamentoTendencia: sinal === "CALL" && indicadores.tendencia.tendencia.includes("ALTA") ||
                           sinal === "PUT" && indicadores.tendencia.tendencia.includes("BAIXA") ? 25 : 0,
@@ -219,10 +217,8 @@ function calcularScore(sinal, indicadores, divergencias) {
                 sinal === "PUT" && indicadores.close < indicadores.superTrend.valor ? 10 : 0
   };
   
-  // Adicionar pontos específicos
   score += Object.values(fatores).reduce((sum, val) => sum + val, 0);
   
-  // Limitar entre 0-100
   return Math.min(100, Math.max(0, score));
 }
 
@@ -481,7 +477,7 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
     
     const slice = dados.slice(-periodo);
     const buckets = {};
-    const precisao = 5; // Aumentada para forex
+    const precisao = 5;
     
     for (const vela of slice) {
       const amplitude = vela.high - vela.low;
@@ -603,7 +599,6 @@ async function analisarMercado() {
     }
     const divergencias = detectarDivergencias(closes, rsiHistory, highs, lows);
 
-    // SISTEMA DE TENDÊNCIA (volume removido)
     const tendencia = avaliarTendencia(closes, ema8, ema21, ema200);
     state.tendenciaDetectada = tendencia.tendencia;
     state.forcaTendencia = tendencia.forca;
@@ -623,16 +618,13 @@ async function analisarMercado() {
       tendencia
     };
 
-    // GERADOR DE SINAIS
     const sinal = gerarSinal(indicadores, divergencias);
     const score = calcularScore(sinal, indicadores, divergencias);
 
-    // ATUALIZAR ESTADO
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
 
-    // ATUALIZAR INTERFACE
     atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
 
     const criteriosElement = document.getElementById("criterios");
@@ -666,21 +658,25 @@ async function analisarMercado() {
 }
 
 // =============================================
-// FUNÇÕES DE DADOS (TWELVE DATA API)
+// FUNÇÕES DE DADOS (TWELVE DATA API) COM ROTAÇÃO DE CHAVES
 // =============================================
 async function obterDadosTwelveData() {
   try {
-    const response = await fetch(`${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=1min&outputsize=100&apikey=9cf795b2a4f14d43a049ca935d174ebb`);
-    if (!response.ok) throw new Error("Falha na API Twelve Data");
+    const apiKey = API_KEYS[currentKeyIndex];
+    const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=1min&outputsize=100&apikey=${apiKey}`;
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`Falha na API: ${response.status}`);
+    }
     
     const data = await response.json();
     
-    // Verificar erro na resposta
-    if (data.code || data.status === 'error') {
+    if (data.status === 'error') {
       throw new Error(data.message || `Erro Twelve Data: ${data.code}`);
     }
     
-    // Reverter a ordem para ter os dados mais antigos primeiro
     const valores = data.values.reverse();
     
     return valores.map(item => ({
@@ -693,6 +689,15 @@ async function obterDadosTwelveData() {
     }));
   } catch (e) {
     console.error("Erro ao obter dados da Twelve Data:", e);
+    
+    errorCount++;
+    
+    if (errorCount >= 2) {
+      currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+      errorCount = 0;
+      console.log(`Alternando para chave: ${currentKeyIndex + 1}`);
+    }
+    
     throw e;
   }
 }
@@ -739,14 +744,11 @@ function iniciarAplicativo() {
     return;
   }
   
-  // Configurar atualizações periódicas
   setInterval(atualizarRelogio, 1000);
   sincronizarTimer();
   
-  // Primeira análise
   setTimeout(analisarMercado, 2000);
   
-  // Botão de backtest
   const backtestBtn = document.createElement('button');
   backtestBtn.textContent = 'Executar Backtest (5 dias)';
   backtestBtn.style.position = 'fixed';
