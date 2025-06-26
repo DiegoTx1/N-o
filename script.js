@@ -82,8 +82,8 @@ const CONFIG = {
 // GERENCIADOR DE CHAVES API
 // =============================================
 const API_KEYS = [
-  "SUA_CHAVE_API_1",  // SUA PRIMEIRA CHAVE AQUI
-  "SUA_CHAVE_API_2"   // SUA SEGUNDA CHAVE AQUI
+  "9cf795b2a4f14d43a049ca935d174ebb",  // SUA PRIMEIRA CHAVE AQUI
+  "0105e6681b894e0185704171c53f5075"   // SUA SEGUNDA CHAVE AQUI
 ];
 let currentKeyIndex = 0;
 let errorCount = 0;
