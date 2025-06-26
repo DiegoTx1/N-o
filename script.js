@@ -11,7 +11,7 @@ const state = {
   ultimoSinal: null,
   ultimoScore: 0,
   contadorLaterais: 0,
-  marketOpen: true,
+  marketOpen: true, // Forçado para true para testes
   noticiasRecentes: [],
   volumeProfile: [],
   institutionalFlow: 0,
@@ -97,21 +97,9 @@ const CONFIG = {
 // VERIFICAÇÃO DE MERCADO ABERTO (COM LOG)
 // =============================================
 function verificarHorarioMercado() {
-  const agora = new Date();
-  const horaUTC = agora.getUTCHours();
-  const diaSemana = agora.getUTCDay();
-  
-  const horarioAltaLiquidez = horaUTC >= 12 && horaUTC < 20;
-  const fimDeSemana = diaSemana === 0 || diaSemana === 6;
-  
-  state.marketOpen = horarioAltaLiquidez && !fimDeSemana;
-  
-  console.log(`Verificação de mercado: 
-    Hora UTC: ${horaUTC}, 
-    Dia: ${diaSemana}, 
-    Mercado Aberto: ${state.marketOpen}`);
-  
-  return state.marketOpen;
+  // SEMPRE RETORNA TRUE PARA TESTES
+  state.marketOpen = true;
+  return true;
 }
 
 // =============================================
@@ -167,7 +155,7 @@ function avaliarTendencia(closes, highs, lows, ema8, ema21, ema200) {
 }
 
 // =============================================
-// GERADOR DE SINAIS (COM LOGS DETALHADOS)
+// GERADOR DE SINAIS (COM LOGS DETALHADOS) - CORRIGIDO
 // =============================================
 function gerarSinal(indicadores, divergencias) {
   if (!state.marketOpen) {
@@ -202,20 +190,20 @@ function gerarSinal(indicadores, divergencias) {
   console.log(`MACD: Hist=${macd.histograma}, Sinal=${macd.sinalLinha}`);
   console.log(`ADX: ${adx}, ATR: ${atr}`);
 
-  // 1. SINAIS DE TENDÊNCIA FORTE
+  // 1. SINAIS DE TENDÊNCIA FORTE (CONDIÇÕES RELAXADAS)
   if (tendencia.tendencia === "FORTE_ALTA") {
     const condicoesCompra = [
       close > emaCurta,
-      macd.histograma > 0 && macd.histograma > macd.sinalLinha * 0.8,
-      stoch.k > 60 && stoch.k > stoch.d,
-      close > superTrend.valor && superTrend.direcao > 0,
-      volume > volumeMedia * 1.2,
+      macd.histograma > 0,
+      stoch.k > 50,
+      close > superTrend.valor,
+      volume > volumeMedia * 1.1,
       adx > CONFIG.LIMIARES.ADX_FORTE
     ];
     
     console.log("Condições COMPRA:", condicoesCompra);
     
-    if (condicoesCompra.filter(Boolean).length >= 3) {
+    if (condicoesCompra.filter(Boolean).length >= 2) { // Reduzido para 2 condições
       console.log("Sinal CALL gerado por tendência forte");
       return "CALL";
     }
@@ -224,38 +212,38 @@ function gerarSinal(indicadores, divergencias) {
   if (tendencia.tendencia === "FORTE_BAIXA") {
     const condicoesVenda = [
       close < emaCurta,
-      macd.histograma < 0 && macd.histograma < macd.sinalLinha * 0.8,
-      stoch.k < 40 && stoch.k < stoch.d,
-      close < superTrend.valor && superTrend.direcao < 0,
-      volume > volumeMedia * 1.2,
+      macd.histograma < 0,
+      stoch.k < 50,
+      close < superTrend.valor,
+      volume > volumeMedia * 1.1,
       adx > CONFIG.LIMIARES.ADX_FORTE
     ];
     
     console.log("Condições VENDA:", condicoesVenda);
     
-    if (condicoesVenda.filter(Boolean).length >= 3) {
+    if (condicoesVenda.filter(Boolean).length >= 2) { // Reduzido para 2 condições
       console.log("Sinal PUT gerado por tendência forte");
       return "PUT";
     }
   }
   
-  // 2. SINAIS DE BREAKOUT
+  // 2. SINAIS DE BREAKOUT (LIMIAR REDUZIDO)
   const variacao = state.resistenciaKey - state.suporteKey;
-  const limiteBreakout = Math.max(variacao * 0.15, atr * 1.2);
+  const limiteBreakout = Math.max(variacao * 0.1, atr * 0.8); // Limiar reduzido
   
   console.log(`Limite Breakout: ${limiteBreakout}, ATR: ${atr}`);
   
   if (close > (state.resistenciaKey + limiteBreakout)) {
     const velas = state.dadosHistoricos.slice(-3);
-    const confirmacao = velas.filter(v => v.close > state.resistenciaKey).length >= 2;
+    const confirmacao = velas.filter(v => v.close > state.resistenciaKey).length >= 1; // Reduzido para 1 confirmação
     
     console.log(`Breakout ALTA: 
       Close: ${close}, 
       Resistência+Limite: ${state.resistenciaKey + limiteBreakout},
-      Volume: ${volume} > ${volumeMedia * 1.5}? ${volume > volumeMedia * 1.5},
+      Volume: ${volume} > ${volumeMedia * 1.2}? ${volume > volumeMedia * 1.2},
       Confirmação: ${confirmacao}`);
     
-    if (volume > volumeMedia * 1.5 && confirmacao) {
+    if (volume > volumeMedia * 1.2 && confirmacao) {
       console.log("Sinal CALL gerado por breakout de alta");
       return "CALL";
     }
@@ -263,35 +251,35 @@ function gerarSinal(indicadores, divergencias) {
   
   if (close < (state.suporteKey - limiteBreakout)) {
     const velas = state.dadosHistoricos.slice(-3);
-    const confirmacao = velas.filter(v => v.close < state.suporteKey).length >= 2;
+    const confirmacao = velas.filter(v => v.close < state.suporteKey).length >= 1; // Reduzido para 1 confirmação
     
     console.log(`Breakout BAIXA: 
       Close: ${close}, 
       Suporte-Limite: ${state.suporteKey - limiteBreakout},
-      Volume: ${volume} > ${volumeMedia * 1.5}? ${volume > volumeMedia * 1.5},
+      Volume: ${volume} > ${volumeMedia * 1.2}? ${volume > volumeMedia * 1.2},
       Confirmação: ${confirmacao}`);
     
-    if (volume > volumeMedia * 1.5 && confirmacao) {
+    if (volume > volumeMedia * 1.2 && confirmacao) {
       console.log("Sinal PUT gerado por breakout de baixa");
       return "PUT";
     }
   }
   
-  // 3. SINAIS POR DIVERGÊNCIA
+  // 3. SINAIS POR DIVERGÊNCIA (CONDIÇÕES RELAXADAS)
   if (divergencias.divergenciaRSI) {
     console.log(`Divergência detectada: ${divergencias.tipoDivergencia}`);
     
     if (divergencias.tipoDivergencia === "ALTA") {
       const condicoes = [
         close > state.suporteKey,
-        rsi > 45,
-        volume > volumeMedia * 1.3,
-        stoch.k > 20 && stoch.d > 20
+        rsi > 40,
+        volume > volumeMedia,
+        stoch.k > 30
       ];
       
       console.log("Condições Divergência ALTA:", condicoes);
       
-      if (condicoes.filter(Boolean).length >= 3) {
+      if (condicoes.filter(Boolean).length >= 2) { // Reduzido para 2 condições
         console.log("Sinal CALL gerado por divergência de alta");
         return "CALL";
       }
@@ -300,14 +288,14 @@ function gerarSinal(indicadores, divergencias) {
     if (divergencias.tipoDivergencia === "BAIXA") {
       const condicoes = [
         close < state.resistenciaKey,
-        rsi < 55,
-        volume > volumeMedia * 1.3,
-        stoch.k < 80 && stoch.d < 80
+        rsi < 60,
+        volume > volumeMedia,
+        stoch.k < 70
       ];
       
       console.log("Condições Divergência BAIXA:", condicoes);
       
-      if (condicoes.filter(Boolean).length >= 3) {
+      if (condicoes.filter(Boolean).length >= 2) { // Reduzido para 2 condições
         console.log("Sinal PUT gerado por divergência de baixa");
         return "PUT";
       }
@@ -375,41 +363,11 @@ function calcularGestaoRisco(sinal, close, atr) {
 }
 
 // =============================================
-// FILTRO DE NOTÍCIAS (COM LOG)
+// FILTRO DE NOTÍCIAS (COM LOG) - DESATIVADO
 // =============================================
 async function verificarNoticias() {
-  try {
-    const url = `${CONFIG.API_ENDPOINTS.CALENDARIO}?apikey=${CONFIG.SUA_CHAVE_API}&min_importance=2`;
-    console.log("Verificando notícias em:", url);
-    
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      console.error("Erro na API de notícias:", response.status);
-      return true;
-    }
-    
-    const data = await response.json();
-    const agora = new Date();
-    
-    if (!data.data) {
-      console.log("Nenhum dado de notícias retornado");
-      return true;
-    }
-    
-    state.noticiasRecentes = data.data.filter(evento => {
-      const dataEvento = new Date(evento.date);
-      const diffHoras = (dataEvento - agora) / (1000 * 60 * 60);
-      return diffHoras > 0 && diffHoras < 4;
-    });
-    
-    console.log(`Notícias próximas encontradas: ${state.noticiasRecentes.length}`);
-    
-    return state.noticiasRecentes.length === 0;
-  } catch (e) {
-    console.error("Erro ao verificar notícias:", e);
-    return true;
-  }
+  // SEMPRE RETORNA TRUE (SEM BLOQUEIO)
+  return true;
 }
 
 // =============================================
@@ -715,38 +673,45 @@ function calcularLiquidez(velas, periodo = CONFIG.PERIODOS.LIQUIDITY_ZONES) {
   };
 }
 
+// =============================================
+// DETECÇÃO DE DIVERGÊNCIAS (CORRIGIDA)
+// =============================================
 function detectarDivergencias(closes, rsis, highs, lows) {
   try {
-    if (closes.length < 10 || rsis.length < 10) 
+    if (closes.length < 5 || rsis.length < 5) 
       return { divergenciaRSI: false, tipoDivergencia: "NENHUMA", divergenciaOculta: false };
     
-    const rsiSuavizado = rsis.map((val, idx, arr) => {
-      return idx > 1 ? (val + arr[idx-1] + arr[idx-2])/3 : val;
-    });
+    // Detecção simplificada com 3 pontos
+    const idxUltimo = closes.length - 1;
+    const idxAnterior = closes.length - 3;
+    const idxMaisAntigo = closes.length - 5;
     
-    const ultimosCloses = closes.slice(-10);
-    const ultimosRSIs = rsiSuavizado.slice(-10);
-    const ultimosHighs = highs.slice(-10);
-    const ultimosLows = lows.slice(-10);
+    // Divergência de alta: preço mais baixo, RSI mais alto
+    if (lows[idxUltimo] < lows[idxAnterior] && 
+        rsis[idxUltimo] > rsis[idxAnterior] &&
+        lows[idxAnterior] < lows[idxMaisAntigo] &&
+        rsis[idxAnterior] > rsis[idxMaisAntigo]) {
+      return {
+        divergenciaRSI: true,
+        tipoDivergencia: "ALTA"
+      };
+    }
     
-    const baixaPreco = ultimosLows[0] < ultimosLows[4] && ultimosLows[4] < ultimosLows[8];
-    const altaRSI = ultimosRSIs[0] > ultimosRSIs[4] && ultimosRSIs[4] > ultimosRSIs[8];
-    const divergenciaAlta = baixaPreco && altaRSI;
+    // Divergência de baixa: preço mais alto, RSI mais baixo
+    if (highs[idxUltimo] > highs[idxAnterior] && 
+        rsis[idxUltimo] < rsis[idxAnterior] &&
+        highs[idxAnterior] > highs[idxMaisAntigo] &&
+        rsis[idxAnterior] < rsis[idxMaisAntigo]) {
+      return {
+        divergenciaRSI: true,
+        tipoDivergencia: "BAIXA"
+      };
+    }
     
-    const altaPreco = ultimosHighs[0] > ultimosHighs[4] && ultimosHighs[4] > ultimosHighs[8];
-    const baixaRSI = ultimosRSIs[0] < ultimosRSIs[4] && ultimosRSIs[4] < ultimosRSIs[8];
-    const divergenciaBaixa = altaPreco && baixaRSI;
-    
-    const result = {
-      divergenciaRSI: divergenciaAlta || divergenciaBaixa,
-      divergenciaOculta: false,
-      tipoDivergencia: divergenciaAlta ? "ALTA" : 
-                      divergenciaBaixa ? "BAIXA" : "NENHUMA"
+    return { 
+      divergenciaRSI: false, 
+      tipoDivergencia: "NENHUMA" 
     };
-    
-    console.log(`Divergências detectadas: ${result.divergenciaRSI ? result.tipoDivergencia : "Nenhuma"}`);
-    
-    return result;
   } catch (e) {
     console.error("Erro na detecção de divergências:", e);
     return { divergenciaRSI: false, divergenciaOculta: false, tipoDivergencia: "NENHUMA" };
