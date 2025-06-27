@@ -33,7 +33,8 @@ const CONFIG = {
   },
   PERIODOS: {
     RSI: 14,
-    STOCH: 14,
+    STOCH_K: 14,
+    STOCH_D: 3,
     WILLIAMS: 14,
     EMA_CURTA: 8,
     EMA_MEDIA: 21,
@@ -48,7 +49,8 @@ const CONFIG = {
     ATR: 14,
     SUPERTREND: 10,
     VOLUME_PROFILE: 50,
-    LIQUIDITY_ZONES: 20
+    LIQUIDITY_ZONES: 20,
+    DIVERGENCIA_LOOKBACK: 15
   },
   LIMIARES: {
     SCORE_ALTO: 85,
@@ -61,7 +63,8 @@ const CONFIG = {
     WILLIAMS_OVERSOLD: -85,
     VARIACAO_LATERAL: 0.005,
     VWAP_DESVIO: 0.005,
-    ATR_LIMIAR: 0.0005
+    ATR_LIMIAR: 0.0005,
+    BUCKET_SIZE: 0.0005 // Tamanho do bucket para Volume Profile
   },
   PESOS: {
     RSI: 1.7,
@@ -82,8 +85,8 @@ const CONFIG = {
 // GERENCIADOR DE CHAVES API
 // =============================================
 const API_KEYS = [
-  "9cf795b2a4f14d43a049ca935d174ebb",  // SUA PRIMEIRA CHAVE AQUI
-  "0105e6681b894e0185704171c53f5075"   // SUA SEGUNDA CHAVE AQUI
+  "9cf795b2a4f14d43a049ca935d174ebb",
+  "0105e6681b894e0185704171c53f5075"
 ];
 let currentKeyIndex = 0;
 let errorCount = 0;
@@ -298,51 +301,82 @@ const calcularMedia = {
   }
 };
 
+// Função RSI otimizada com cálculo incremental
 function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
-  if (!Array.isArray(closes) || closes.length < periodo + 1) return 50;
+  if (closes.length < periodo + 1) return 50;
   
-  let gains = 0, losses = 0;
-  
-  for (let i = 1; i <= periodo; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff > 0) gains += diff;
-    else losses += Math.abs(diff);
-  }
-
-  let avgGain = gains / periodo;
-  let avgLoss = Math.max(losses / periodo, 1e-8);
-
-  for (let i = periodo + 1; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    const gain = diff > 0 ? diff : 0;
-    const loss = diff < 0 ? Math.abs(diff) : 0;
+  // Cálculo inicial
+  if (closes.length === periodo + 1) {
+    let gains = 0, losses = 0;
+    for (let i = 1; i <= periodo; i++) {
+      const diff = closes[i] - closes[i - 1];
+      if (diff > 0) gains += diff;
+      else losses -= diff; // Perdas são valores absolutos
+    }
     
-    avgGain = (avgGain * (periodo - 1) + gain) / periodo;
-    avgLoss = (avgLoss * (periodo - 1) + loss) / periodo;
+    const avgGain = gains / periodo;
+    const avgLoss = losses / periodo;
+    const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
   }
-
-  const rs = avgGain / Math.max(avgLoss, 1e-8);
+  
+  // Cálculo incremental
+  const prevRSI = state.rsiCache || 50;
+  const diff = closes[closes.length - 1] - closes[closes.length - 2];
+  
+  let avgGain = state.avgGainCache || 0;
+  let avgLoss = state.avgLossCache || 0;
+  
+  if (diff > 0) {
+    avgGain = ((avgGain * (periodo - 1)) + diff) / periodo;
+    avgLoss = (avgLoss * (periodo - 1)) / periodo;
+  } else {
+    avgGain = (avgGain * (periodo - 1)) / periodo;
+    avgLoss = ((avgLoss * (periodo - 1)) - diff) / periodo;
+  }
+  
+  // Atualizar cache para próxima iteração
+  state.avgGainCache = avgGain;
+  state.avgLossCache = avgLoss;
+  
+  const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
 }
 
-function calcularStochastic(highs, lows, closes, periodo = CONFIG.PERIODOS.STOCH) {
+// Stochastic corrigido com suavização K e D
+function calcularStochastic(highs, lows, closes, 
+                          periodoK = CONFIG.PERIODOS.STOCH_K, 
+                          periodoD = CONFIG.PERIODOS.STOCH_D) {
   try {
-    if (!Array.isArray(closes) || closes.length < periodo) return { k: 50, d: 50 };
+    if (closes.length < periodoK + periodoD) return { k: 50, d: 50 };
     
     const kValues = [];
-    for (let i = periodo-1; i < closes.length; i++) {
-      const sliceHigh = highs.slice(i-periodo+1, i+1);
-      const sliceLow = lows.slice(i-periodo+1, i+1);
+    for (let i = periodoK - 1; i < closes.length; i++) {
+      const sliceHigh = highs.slice(i - periodoK + 1, i + 1);
+      const sliceLow = lows.slice(i - periodoK + 1, i + 1);
       const highestHigh = Math.max(...sliceHigh);
       const lowestLow = Math.min(...sliceLow);
       const range = highestHigh - lowestLow;
-      kValues.push(range > 0 ? ((closes[i] - lowestLow) / range) * 100 : 50);
+      const k = range !== 0 ? ((closes[i] - lowestLow) / range) * 100 : 50;
+      kValues.push(k);
     }
     
-    const dValues = kValues.length >= 3 ? calcularMedia.simples(kValues.slice(-3), 3) : 50;
+    // Suavização da linha %K
+    const kSuavizado = [];
+    for (let i = periodoD - 1; i < kValues.length; i++) {
+      const mediaK = calcularMedia.simples(kValues.slice(i - periodoD + 1, i + 1), periodoD);
+      kSuavizado.push(mediaK);
+    }
+    
+    // Cálculo da linha %D (suavização do %K)
+    const dValues = [];
+    for (let i = periodoD - 1; i < kSuavizado.length; i++) {
+      dValues.push(calcularMedia.simples(kSuavizado.slice(i - periodoD + 1, i + 1), periodoD));
+    }
+    
     return {
-      k: kValues[kValues.length-1] || 50,
-      d: dValues || 50
+      k: kSuavizado[kSuavizado.length - 1] || 50,
+      d: dValues[dValues.length - 1] || 50
     };
   } catch (e) {
     console.error("Erro no cálculo Stochastic:", e);
@@ -350,9 +384,10 @@ function calcularStochastic(highs, lows, closes, periodo = CONFIG.PERIODOS.STOCH
   }
 }
 
+// Williams %R corrigido
 function calcularWilliams(highs, lows, closes, periodo = CONFIG.PERIODOS.WILLIAMS) {
   try {
-    if (!Array.isArray(closes) || closes.length < periodo) return 0;
+    if (closes.length < periodo) return 0;
     
     const sliceHigh = highs.slice(-periodo);
     const sliceLow = lows.slice(-periodo);
@@ -360,7 +395,7 @@ function calcularWilliams(highs, lows, closes, periodo = CONFIG.PERIODOS.WILLIAM
     const lowestLow = Math.min(...sliceLow);
     const range = highestHigh - lowestLow;
     
-    return range > 0 ? ((highestHigh - closes[closes.length-1]) / range) * -100 : 0;
+    return range > 0 ? ((highestHigh - closes[closes.length - 1]) / range) * -100 : 0;
   } catch (e) {
     console.error("Erro no cálculo Williams:", e);
     return 0;
@@ -371,7 +406,7 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
                     lenta = CONFIG.PERIODOS.MACD_LENTA, 
                     sinal = CONFIG.PERIODOS.MACD_SINAL) {
   try {
-    if (!Array.isArray(closes) || closes.length < lenta + sinal) {
+    if (closes.length < lenta + sinal) {
       return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
     }
 
@@ -438,68 +473,127 @@ function calcularATR(dados, periodo = CONFIG.PERIODOS.ATR) {
   }
 }
 
+// Supertrend refatorado para cálculo sequencial
 function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multiplicador = 3) {
   try {
-    if (!Array.isArray(dados) || dados.length < periodo) return { direcao: 0, valor: 0 };
+    if (dados.length < periodo) return { direcao: 0, valor: 0 };
     
-    const atr = calcularATR(dados, periodo);
-    const ultimo = dados[dados.length - 1];
-    const hl2 = (ultimo.high + ultimo.low) / 2;
+    const superTrends = [];
+    const atrValues = [];
     
-    const upperBand = hl2 + (multiplicador * atr);
-    const lowerBand = hl2 - (multiplicador * atr);
-    
-    let direcao = 1;
-    let superTrend = upperBand;
-    
-    if (dados.length > periodo) {
-      const prev = dados[dados.length - 2];
-      
-      if (prev.close > superTrend) {
-        direcao = 1;
-        superTrend = Math.max(upperBand, prev.superTrend || upperBand);
-      } else {
-        direcao = -1;
-        superTrend = Math.min(lowerBand, prev.superTrend || lowerBand);
-      }
+    // Calcular ATR para todo o conjunto de dados
+    for (let i = periodo; i < dados.length; i++) {
+      const slice = dados.slice(i - periodo, i);
+      atrValues.push(calcularATR(slice, periodo));
     }
     
-    return { direcao, valor: superTrend };
+    // Calcular Supertrend sequencialmente
+    for (let i = periodo; i < dados.length; i++) {
+      const current = dados[i];
+      const hl2 = (current.high + current.low) / 2;
+      const atr = atrValues[i - periodo];
+      
+      const upperBand = hl2 + (multiplicador * atr);
+      const lowerBand = hl2 - (multiplicador * atr);
+      
+      let superTrend;
+      let direcao;
+      
+      if (i === periodo) {
+        // Primeiro valor
+        superTrend = upperBand;
+        direcao = 1;
+      } else {
+        const prev = dados[i - 1];
+        const prevSuperTrend = superTrends[superTrends.length - 1];
+        
+        if (prev.close > prevSuperTrend.valor) {
+          direcao = 1;
+          superTrend = Math.max(lowerBand, prevSuperTrend.valor);
+        } else {
+          direcao = -1;
+          superTrend = Math.min(upperBand, prevSuperTrend.valor);
+        }
+      }
+      
+      superTrends.push({ direcao, valor: superTrend });
+    }
+    
+    return superTrends.length > 0 ? superTrends[superTrends.length - 1] : { direcao: 0, valor: 0 };
   } catch (e) {
     console.error("Erro no cálculo SuperTrend:", e);
     return { direcao: 0, valor: 0 };
   }
 }
 
+// Volume Profile com buckets de tamanho fixo
 function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) {
   try {
     if (!Array.isArray(dados) || dados.length < periodo) return { pvp: 0, vaHigh: 0, vaLow: 0 };
     
     const slice = dados.slice(-periodo);
     const buckets = {};
-    const precisao = 5;
+    const bucketSize = CONFIG.LIMIARES.BUCKET_SIZE;
     
+    // Encontrar range de preços
+    const minPrice = Math.min(...slice.map(v => v.low));
+    const maxPrice = Math.max(...slice.map(v => v.high));
+    
+    // Criar buckets
+    for (let price = minPrice; price <= maxPrice; price += bucketSize) {
+      const bucketKey = price.toFixed(5);
+      buckets[bucketKey] = 0;
+    }
+    
+    // Distribuir volume pelos buckets
     for (const vela of slice) {
       const amplitude = vela.high - vela.low;
       if (amplitude === 0) continue;
       
-      const niveis = 10;
-      const passo = amplitude / niveis;
+      const priceRange = [];
+      for (let p = vela.low; p <= vela.high; p += bucketSize) {
+        priceRange.push(p.toFixed(5));
+      }
       
-      for (let i = 0; i < niveis; i++) {
-        const preco = (vela.low + i * passo).toFixed(precisao);
-        buckets[preco] = (buckets[preco] || 0) + (vela.volume / niveis);
+      const volumePorBucket = vela.volume / priceRange.length;
+      for (const bucket of priceRange) {
+        if (buckets[bucket] !== undefined) {
+          buckets[bucket] += volumePorBucket;
+        }
       }
     }
     
+    // Encontrar PVP (preço com maior volume)
     const niveisOrdenados = Object.entries(buckets)
       .sort((a, b) => b[1] - a[1]);
     
     if (niveisOrdenados.length === 0) return { pvp: 0, vaHigh: 0, vaLow: 0 };
     
     const pvp = parseFloat(niveisOrdenados[0][0]);
-    const vaHigh = parseFloat(niveisOrdenados[Math.floor(niveisOrdenados.length * 0.3)]?.[0] || pvp);
-    const vaLow = parseFloat(niveisOrdenados[Math.floor(niveisOrdenados.length * 0.7)]?.[0] || pvp);
+    
+    // Calcular Value Area (70% do volume total)
+    const volumeTotal = Object.values(buckets).reduce((sum, vol) => sum + vol, 0);
+    const volumeAlvo = volumeTotal * 0.7;
+    
+    let volumeAcumulado = 0;
+    const bucketsOrdenados = [...niveisOrdenados].sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
+    
+    // Encontrar VA Low
+    let vaLow = pvp;
+    for (let i = 0; i < bucketsOrdenados.length; i++) {
+      volumeAcumulado += bucketsOrdenados[i][1];
+      vaLow = parseFloat(bucketsOrdenados[i][0]);
+      if (volumeAcumulado >= volumeAlvo) break;
+    }
+    
+    // Encontrar VA High
+    volumeAcumulado = 0;
+    let vaHigh = pvp;
+    for (let i = bucketsOrdenados.length - 1; i >= 0; i--) {
+      volumeAcumulado += bucketsOrdenados[i][1];
+      vaHigh = parseFloat(bucketsOrdenados[i][0]);
+      if (volumeAcumulado >= volumeAlvo) break;
+    }
     
     return { pvp, vaHigh, vaLow };
   } catch (e) {
@@ -528,33 +622,105 @@ function calcularLiquidez(velas, periodo = CONFIG.PERIODOS.LIQUIDITY_ZONES) {
   };
 }
 
+// Detecção de divergências melhorada
 function detectarDivergencias(closes, rsis, highs, lows) {
   try {
-    if (closes.length < 5 || rsis.length < 5) 
+    const lookback = CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK;
+    if (closes.length < lookback || rsis.length < lookback) {
       return { divergenciaRSI: false, tipoDivergencia: "NENHUMA", divergenciaOculta: false };
+    }
     
-    const rsiSuavizado = rsis.map((val, idx, arr) => {
-      return idx > 1 ? (val + arr[idx-1] + arr[idx-2])/3 : val;
-    });
+    // Identificar máximos e mínimos significativos
+    const findExtremes = (data, isHigh = true) => {
+      const extremes = [];
+      for (let i = 3; i < data.length - 3; i++) {
+        if (isHigh) {
+          if (data[i] > data[i-1] && data[i] > data[i-2] && 
+              data[i] > data[i+1] && data[i] > data[i+2]) {
+            extremes.push({ index: i, value: data[i] });
+          }
+        } else {
+          if (data[i] < data[i-1] && data[i] < data[i-2] && 
+              data[i] < data[i+1] && data[i] < data[i+2]) {
+            extremes.push({ index: i, value: data[i] });
+          }
+        }
+      }
+      return extremes;
+    };
     
-    const ultimosCloses = closes.slice(-5);
-    const ultimosRSIs = rsiSuavizado.slice(-5);
-    const ultimosHighs = highs.slice(-5);
-    const ultimosLows = lows.slice(-5);
+    const priceHighs = findExtremes(highs, true);
+    const priceLows = findExtremes(lows, false);
+    const rsiHighs = findExtremes(rsis, true);
+    const rsiLows = findExtremes(rsis, false);
     
-    const baixaPreco = ultimosLows[0] < ultimosLows[2] && ultimosLows[2] < ultimosLows[4];
-    const altaRSI = ultimosRSIs[0] > ultimosRSIs[2] && ultimosRSIs[2] > ultimosRSIs[4];
-    const divergenciaAlta = baixaPreco && altaRSI;
+    // Verificar divergências regulares
+    let divergenciaRegularAlta = false;
+    let divergenciaRegularBaixa = false;
     
-    const altaPreco = ultimosHighs[0] > ultimosHighs[2] && ultimosHighs[2] > ultimosHighs[4];
-    const baixaRSI = ultimosRSIs[0] < ultimosRSIs[2] && ultimosRSIs[2] < ultimosRSIs[4];
-    const divergenciaBaixa = altaPreco && baixaRSI;
+    // Divergência de baixa regular (preço faz máximas mais altas, RSI faz máximas mais baixas)
+    if (priceHighs.length >= 2 && rsiHighs.length >= 2) {
+      const lastPriceHigh = priceHighs[priceHighs.length - 1];
+      const prevPriceHigh = priceHighs[priceHighs.length - 2];
+      const lastRsiHigh = rsiHighs[rsiHighs.length - 1];
+      const prevRsiHigh = rsiHighs[rsiHighs.length - 2];
+      
+      if (lastPriceHigh.value > prevPriceHigh.value && 
+          lastRsiHigh.value < prevRsiHigh.value) {
+        divergenciaRegularBaixa = true;
+      }
+    }
+    
+    // Divergência de alta regular (preço faz mínimas mais baixas, RSI faz mínimas mais altas)
+    if (priceLows.length >= 2 && rsiLows.length >= 2) {
+      const lastPriceLow = priceLows[priceLows.length - 1];
+      const prevPriceLow = priceLows[priceLows.length - 2];
+      const lastRsiLow = rsiLows[rsiLows.length - 1];
+      const prevRsiLow = rsiLows[rsiLows.length - 2];
+      
+      if (lastPriceLow.value < prevPriceLow.value && 
+          lastRsiLow.value > prevRsiLow.value) {
+        divergenciaRegularAlta = true;
+      }
+    }
+    
+    // Verificar divergências ocultas
+    let divergenciaOcultaAlta = false;
+    let divergenciaOcultaBaixa = false;
+    
+    // Divergência oculta de baixa (preço faz máximas mais baixas, RSI faz máximas mais altas)
+    if (priceHighs.length >= 2 && rsiHighs.length >= 2) {
+      const lastPriceHigh = priceHighs[priceHighs.length - 1];
+      const prevPriceHigh = priceHighs[priceHighs.length - 2];
+      const lastRsiHigh = rsiHighs[rsiHighs.length - 1];
+      const prevRsiHigh = rsiHighs[rsiHighs.length - 2];
+      
+      if (lastPriceHigh.value < prevPriceHigh.value && 
+          lastRsiHigh.value > prevRsiHigh.value) {
+        divergenciaOcultaBaixa = true;
+      }
+    }
+    
+    // Divergência oculta de alta (preço faz mínimas mais altas, RSI faz mínimas mais baixas)
+    if (priceLows.length >= 2 && rsiLows.length >= 2) {
+      const lastPriceLow = priceLows[priceLows.length - 1];
+      const prevPriceLow = priceLows[priceLows.length - 2];
+      const lastRsiLow = rsiLows[rsiLows.length - 1];
+      const prevRsiLow = rsiLows[rsiLows.length - 2];
+      
+      if (lastPriceLow.value > prevPriceLow.value && 
+          lastRsiLow.value < prevRsiLow.value) {
+        divergenciaOcultaAlta = true;
+      }
+    }
     
     return {
-      divergenciaRSI: divergenciaAlta || divergenciaBaixa,
-      divergenciaOculta: false,
-      tipoDivergencia: divergenciaAlta ? "ALTA" : 
-                      divergenciaBaixa ? "BAIXA" : "NENHUMA"
+      divergenciaRSI: divergenciaRegularAlta || divergenciaRegularBaixa,
+      divergenciaOculta: divergenciaOcultaAlta || divergenciaOcultaBaixa,
+      tipoDivergencia: divergenciaRegularAlta ? "ALTA" : 
+                      divergenciaRegularBaixa ? "BAIXA" : 
+                      divergenciaOcultaAlta ? "OCULTA_ALTA" : 
+                      divergenciaOcultaBaixa ? "OCULTA_BAIXA" : "NENHUMA"
     };
   } catch (e) {
     console.error("Erro na detecção de divergências:", e);
@@ -593,10 +759,13 @@ async function analisarMercado() {
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
     
-    const rsiHistory = [];
-    for (let i = CONFIG.PERIODOS.RSI; i <= closes.length; i++) {
-      rsiHistory.push(calcularRSI(closes.slice(0, i)));
+    // Cálculo incremental de histórico RSI
+    const rsiHistory = state.rsiHistory || [];
+    for (let i = rsiHistory.length; i < closes.length; i++) {
+      rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
     }
+    state.rsiHistory = rsiHistory;
+    
     const divergencias = detectarDivergencias(closes, rsiHistory, highs, lows);
 
     const tendencia = avaliarTendencia(closes, ema8, ema21, ema200);
