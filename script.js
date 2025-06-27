@@ -19,14 +19,18 @@ const state = {
   hiddenOrders: false,
   tendenciaDetectada: "NEUTRA",
   forcaTendencia: 0,
-  dadosHistoricos: [],
+  dadosHistoricos: {
+    M1: [],
+    M5: [],
+    M15: []
+  },
   resistenciaKey: 0,
   suporteKey: 0,
   // Inicialização de caches
   rsiCache: { avgGain: 0, avgLoss: 0, initialized: false },
   emaCache: {
-    ema5: null,   // EMA curta reduzida para 5 períodos
-    ema13: null,  // EMA média reduzida para 13 períodos
+    ema5: null,
+    ema13: null,
     ema200: null
   },
   macdCache: {
@@ -38,7 +42,7 @@ const state = {
   superTrendCache: [],
   atrGlobal: 0,
   rsiHistory: [],
-  cooldown: 0  // Novo mecanismo de cooldown
+  cooldown: 0
 };
 
 const CONFIG = {
@@ -49,26 +53,26 @@ const CONFIG = {
     FOREX_IDX: "EUR/USD"
   },
   PERIODOS: {
-    RSI: 9,              // Período reduzido de 14 para 9
+    RSI: 9,
     STOCH_K: 14,
     STOCH_D: 3,
     WILLIAMS: 14,
-    EMA_CURTA: 5,        // Período reduzido de 8 para 5
-    EMA_MEDIA: 13,       // Período reduzido de 21 para 13
+    EMA_CURTA: 5,
+    EMA_MEDIA: 13,
     EMA_LONGA: 200,
     SMA_VOLUME: 20,
-    MACD_RAPIDA: 6,      // Período reduzido de 12 para 6
-    MACD_LENTA: 13,      // Período reduzido de 26 para 13
+    MACD_RAPIDA: 6,
+    MACD_LENTA: 13,
     MACD_SINAL: 9,
     VELAS_CONFIRMACAO: 3,
     ANALISE_LATERAL: 20,
     VWAP: 20,
     ATR: 14,
-    SUPERTREND: 7,       // Período reduzido de 10 para 7
+    SUPERTREND: 7,
     VOLUME_PROFILE: 50,
     LIQUIDITY_ZONES: 20,
-    DIVERGENCIA_LOOKBACK: 8,  // Período reduzido de 15 para 8
-    EXTREME_LOOKBACK: 2       // Período reduzido de 3 para 2
+    DIVERGENCIA_LOOKBACK: 8,
+    EXTREME_LOOKBACK: 2
   },
   LIMIARES: {
     SCORE_ALTO: 85,
@@ -84,7 +88,7 @@ const CONFIG = {
     ATR_LIMIAR: 0.0005,
     BUCKET_SIZE: 0.0005,
     VOLUME_CONFIRMACAO: 1.2,
-    LATERALIDADE_LIMIAR: 0.0003  // Novo limiar para lateralidade
+    LATERALIDADE_LIMIAR: 0.0003
   },
   PESOS: {
     RSI: 1.7,
@@ -103,6 +107,12 @@ const CONFIG = {
     VOLUME_PROFILE: 0.4,
     LIQUIDEZ: 0.4,
     EMA: 0.2
+  },
+  // Novos pesos para tendência multi-timeframe
+  PESOS_TIMEFRAME: {
+    M15: 0.4,
+    M5: 0.35,
+    M1: 0.25
   }
 };
 
@@ -115,6 +125,121 @@ const API_KEYS = [
 ];
 let currentKeyIndex = 0;
 let errorCount = 0;
+
+// =============================================
+// FUNÇÕES PARA MULTI-TIMEFRAME (NOVAS)
+// =============================================
+
+async function obterDadosMultiTimeframe() {
+  const timeframes = ['1min', '5min', '15min'];
+  const dados = {};
+  
+  for (const tf of timeframes) {
+    try {
+      const apiKey = API_KEYS[currentKeyIndex];
+      const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=${tf}&outputsize=100&apikey=${apiKey}`;
+      
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.status === 'error') throw new Error(data.message);
+      
+      // Converter para chaves consistentes
+      const tfKey = tf === '1min' ? 'M1' : tf === '5min' ? 'M5' : 'M15';
+      dados[tfKey] = data.values.reverse().map(item => ({
+        time: item.datetime,
+        open: parseFloat(item.open),
+        high: parseFloat(item.high),
+        low: parseFloat(item.low),
+        close: parseFloat(item.close),
+        volume: parseFloat(item.volume) || 1
+      }));
+    } catch (e) {
+      console.error(`Erro no timeframe ${tf}:`, e);
+      currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+      throw e;
+    }
+  }
+  
+  return dados;
+}
+
+function calcularTendenciaTimeframe(closes) {
+  if (closes.length < CONFIG.PERIODOS.EMA_MEDIA) {
+    return { tendencia: "NEUTRA", forca: 0 };
+  }
+
+  const calcularEMA = (dados, periodo) => {
+    const emaArray = calcularMedia.exponencial(dados, periodo);
+    return emaArray[emaArray.length - 1];
+  };
+
+  const ema5 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
+  const ema13 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
+  
+  const gradiente = (ema5 - ema13) / ema13 * 10000;
+  const forca = Math.min(100, Math.abs(gradiente * 2));
+  
+  if (forca > 75) {
+    return gradiente > 0 
+      ? { tendencia: "FORTE_ALTA", forca }
+      : { tendencia: "FORTE_BAIXA", forca };
+  }
+  
+  if (forca > 40) {
+    return gradiente > 0 
+      ? { tendencia: "ALTA", forca } 
+      : { tendencia: "BAIXA", forca };
+  }
+  
+  return { tendencia: "NEUTRA", forca: 0 };
+}
+
+function consolidarTendencias(tendencias) {
+  let tendenciaFinal = "NEUTRA";
+  let forcaFinal = 0;
+  
+  // Calcular tendência ponderada
+  for (const [timeframe, dados] of Object.entries(tendencias)) {
+    const peso = CONFIG.PESOS_TIMEFRAME[timeframe] || 0.25;
+    
+    if (dados.tendencia === "FORTE_ALTA") {
+      forcaFinal += dados.forca * peso;
+      if (tendenciaFinal === "NEUTRA") tendenciaFinal = "ALTA";
+    } 
+    else if (dados.tendencia === "FORTE_BAIXA") {
+      forcaFinal += dados.forca * peso;
+      if (tendenciaFinal === "NEUTRA") tendenciaFinal = "BAIXA";
+    }
+    else if (dados.tendencia === "ALTA" && tendenciaFinal !== "BAIXA") {
+      forcaFinal += dados.forca * (peso * 0.7);
+      if (tendenciaFinal === "NEUTRA") tendenciaFinal = "ALTA";
+    }
+    else if (dados.tendencia === "BAIXA" && tendenciaFinal !== "ALTA") {
+      forcaFinal += dados.forca * (peso * 0.7);
+      if (tendenciaFinal === "NEUTRA") tendenciaFinal = "BAIXA";
+    }
+  }
+  
+  // Classificar força final
+  forcaFinal = Math.min(100, Math.max(0, forcaFinal));
+  
+  if (forcaFinal > 75) {
+    return {
+      tendencia: tendenciaFinal === "ALTA" ? "FORTE_ALTA" : "FORTE_BAIXA",
+      forca: forcaFinal
+    };
+  }
+  
+  if (forcaFinal > 40) {
+    return {
+      tendencia: tendenciaFinal,
+      forca: forcaFinal
+    };
+  }
+  
+  return { tendencia: "NEUTRA", forca: 0 };
+}
 
 // =============================================
 // SISTEMA DE TENDÊNCIA OTIMIZADO PARA FOREX
@@ -185,7 +310,7 @@ function gerarSinal(indicadores, divergencias, lateral) {
   } = indicadores;
   
   // Novo cálculo de suporte/resistência
-  const zonas = calcularZonasPreco(state.dadosHistoricos);
+  const zonas = calcularZonasPreco(state.dadosHistoricos.M1);
   state.suporteKey = zonas.suporte;
   state.resistenciaKey = zonas.resistencia;
   
@@ -793,25 +918,42 @@ function detectarDivergencias(closes, rsis, highs, lows) {
 }
 
 // =============================================
-// CORE DO SISTEMA (ATUALIZADO PARA EURUSD)
+// CORE DO SISTEMA (ATUALIZADO PARA MULTI-TIMEFRAME)
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento || !state.marketOpen) return;
   state.leituraEmAndamento = true;
   
   try {
-    const dados = await obterDadosTwelveData();
-    state.dadosHistoricos = dados; // Armazenar para cálculo de zonas
+    // Obter dados dos três timeframes
+    const dadosPorTF = await obterDadosMultiTimeframe();
+    state.dadosHistoricos.M1 = dadosPorTF.M1 || [];
+    state.dadosHistoricos.M5 = dadosPorTF.M5 || [];
+    state.dadosHistoricos.M15 = dadosPorTF.M15 || [];
     
-    if (dados.length < 50) {
-      throw new Error(`Dados insuficientes (${dados.length} velas). Aguardando mais dados...`);
+    // Calcular tendências em cada timeframe
+    const tendencias = {
+      M1: calcularTendenciaTimeframe(state.dadosHistoricos.M1.map(v => v.close)),
+      M5: calcularTendenciaTimeframe(state.dadosHistoricos.M5.map(v => v.close)),
+      M15: calcularTendenciaTimeframe(state.dadosHistoricos.M15.map(v => v.close))
+    };
+    
+    // Consolidar tendências
+    const tendenciaGeral = consolidarTendencias(tendencias);
+    state.tendenciaDetectada = tendenciaGeral.tendencia;
+    state.forcaTendencia = tendenciaGeral.forca;
+
+    // Análise técnica principal usando M1
+    const dadosM1 = state.dadosHistoricos.M1;
+    if (dadosM1.length < 50) {
+      throw new Error(`Dados insuficientes (${dadosM1.length} velas). Aguardando mais dados...`);
     }
     
-    const velaAtual = dados[dados.length - 1];
-    const closes = dados.map(v => v.close);
-    const highs = dados.map(v => v.high);
-    const lows = dados.map(v => v.low);
-    const volumes = dados.map(v => v.volume);
+    const velaAtual = dadosM1[dadosM1.length - 1];
+    const closes = dadosM1.map(v => v.close);
+    const highs = dadosM1.map(v => v.high);
+    const lows = dadosM1.map(v => v.low);
+    const volumes = dadosM1.map(v => v.volume);
 
     const calcularEMA = (dados, periodo) => {
       if (dados.length < periodo) return 0;
@@ -824,9 +966,9 @@ async function analisarMercado() {
     const ema200 = calcularEMA(closes, CONFIG.PERIODOS.EMA_LONGA);
 
     const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME) || 1;
-    const superTrend = calcularSuperTrend(dados);
-    const volumeProfile = calcularVolumeProfile(dados);
-    const liquidez = calcularLiquidez(dados);
+    const superTrend = calcularSuperTrend(dadosM1);
+    const volumeProfile = calcularVolumeProfile(dadosM1);
+    const liquidez = calcularLiquidez(dadosM1);
     
     const rsi = calcularRSI(closes);
     const stoch = calcularStochastic(highs, lows, closes);
@@ -839,18 +981,6 @@ async function analisarMercado() {
     }
     
     const divergencias = detectarDivergencias(closes, state.rsiHistory, highs, lows);
-
-    const tendencia = avaliarTendencia(
-      closes, 
-      ema5, 
-      ema13, 
-      velaAtual.volume,
-      volumeMedia
-    );
-    
-    state.tendenciaDetectada = tendencia.tendencia;
-    state.forcaTendencia = tendencia.forca;
-
     const lateral = detectarLateralidade(closes);
 
     const indicadores = {
@@ -865,7 +995,7 @@ async function analisarMercado() {
       superTrend,
       volumeProfile,
       liquidez,
-      tendencia
+      tendencia: tendenciaGeral
     };
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
@@ -890,6 +1020,7 @@ async function analisarMercado() {
     if (criteriosElement) {
       criteriosElement.innerHTML = `
         <li>📊 Tendência: ${state.tendenciaDetectada} (${state.forcaTendencia}%)</li>
+        <li>⏱️ Timeframes: M1:${tendencias.M1.tendencia} M5:${tendencias.M5.tendencia} M15:${tendencias.M15.tendencia}</li>
         <li>💰 Preço: ${indicadores.close.toFixed(5)}</li>
         <li>📉 RSI: ${rsi.toFixed(2)} ${rsi < 30 ? '🔻' : rsi > 70 ? '🔺' : ''}</li>
         <li>📊 MACD: ${macd.histograma.toFixed(6)} ${macd.histograma > 0 ? '🟢' : '🔴'}</li>
@@ -922,51 +1053,6 @@ async function analisarMercado() {
     if (++state.tentativasErro > 3) setTimeout(() => location.reload(), 10000);
   } finally {
     state.leituraEmAndamento = false;
-  }
-}
-
-// =============================================
-// FUNÇÕES DE DADOS (TWELVE DATA API) COM ROTAÇÃO DE CHAVES
-// =============================================
-async function obterDadosTwelveData() {
-  try {
-    const apiKey = API_KEYS[currentKeyIndex];
-    const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=1min&outputsize=100&apikey=${apiKey}`;
-    
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      throw new Error(`Falha na API: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    
-    if (data.status === 'error') {
-      throw new Error(data.message || `Erro Twelve Data: ${data.code}`);
-    }
-    
-    const valores = data.values ? data.values.reverse() : [];
-    
-    return valores.map(item => ({
-      time: item.datetime,
-      open: parseFloat(item.open),
-      high: parseFloat(item.high),
-      low: parseFloat(item.low),
-      close: parseFloat(item.close),
-      volume: parseFloat(item.volume) || 1
-    }));
-  } catch (e) {
-    console.error("Erro ao obter dados da Twelve Data:", e);
-    
-    errorCount++;
-    
-    if (errorCount >= 2) {
-      currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-      errorCount = 0;
-      console.log(`Alternando para chave: ${currentKeyIndex + 1}`);
-    }
-    
-    throw e;
   }
 }
 
