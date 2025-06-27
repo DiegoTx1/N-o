@@ -21,7 +21,22 @@ const state = {
   forcaTendencia: 0,
   dadosHistoricos: [],
   resistenciaKey: 0,
-  suporteKey: 0
+  suporteKey: 0,
+  // Inicialização de caches
+  rsiCache: { avgGain: 0, avgLoss: 0 },
+  emaCache: {
+    ema8: null,
+    ema21: null,
+    ema200: null
+  },
+  macdCache: {
+    emaRapida: null,
+    emaLenta: null,
+    macdLine: [],
+    signalLine: []
+  },
+  superTrendCache: [],
+  atrGlobal: 0
 };
 
 const CONFIG = {
@@ -50,7 +65,8 @@ const CONFIG = {
     SUPERTREND: 10,
     VOLUME_PROFILE: 50,
     LIQUIDITY_ZONES: 20,
-    DIVERGENCIA_LOOKBACK: 15
+    DIVERGENCIA_LOOKBACK: 15,
+    EXTREME_LOOKBACK: 3
   },
   LIMIARES: {
     SCORE_ALTO: 85,
@@ -64,7 +80,8 @@ const CONFIG = {
     VARIACAO_LATERAL: 0.005,
     VWAP_DESVIO: 0.005,
     ATR_LIMIAR: 0.0005,
-    BUCKET_SIZE: 0.0005 // Tamanho do bucket para Volume Profile
+    BUCKET_SIZE: 0.0005,
+    VOLUME_CONFIRMACAO: 1.2
   },
   PESOS: {
     RSI: 1.7,
@@ -78,6 +95,11 @@ const CONFIG = {
     VOLUME_PROFILE: 1.2,
     DIVERGENCIA: 2.0,
     LIQUIDITY: 1.8
+  },
+  PESOS_SUPORTE_RESISTENCIA: {
+    VOLUME_PROFILE: 0.4,
+    LIQUIDEZ: 0.4,
+    EMA: 0.2
   }
 };
 
@@ -94,7 +116,7 @@ let errorCount = 0;
 // =============================================
 // SISTEMA DE TENDÊNCIA OTIMIZADO PARA FOREX
 // =============================================
-function avaliarTendencia(closes, ema8, ema21, ema200) {
+function avaliarTendencia(closes, ema8, ema21, ema200, volumeAtual, volumeMedio) {
   const ultimoClose = closes[closes.length - 1];
   
   const tendenciaLongoPrazo = ultimoClose > ema200 ? "ALTA" : "BAIXA";
@@ -105,6 +127,11 @@ function avaliarTendencia(closes, ema8, ema21, ema200) {
   
   let forcaTotal = forcaBase;
   if (tendenciaLongoPrazo === tendenciaMedioPrazo) forcaTotal += 30;
+  
+  // Confirmação por volume
+  if (volumeAtual > volumeMedio * CONFIG.LIMIARES.VOLUME_CONFIRMACAO) {
+    forcaTotal += 15;
+  }
   
   if (forcaTotal > 80) {
     return { 
@@ -143,8 +170,16 @@ function gerarSinal(indicadores, divergencias) {
     tendencia
   } = indicadores;
   
-  state.suporteKey = Math.min(volumeProfile.vaLow, liquidez.suporte, emaMedia);
-  state.resistenciaKey = Math.max(volumeProfile.vaHigh, liquidez.resistencia, emaMedia);
+  // Suporte/Resistência com média ponderada
+  state.suporteKey = 
+    (volumeProfile.vaLow * CONFIG.PESOS_SUPORTE_RESISTENCIA.VOLUME_PROFILE) +
+    (liquidez.suporte * CONFIG.PESOS_SUPORTE_RESISTENCIA.LIQUIDEZ) +
+    (emaMedia * CONFIG.PESOS_SUPORTE_RESISTENCIA.EMA);
+    
+  state.resistenciaKey = 
+    (volumeProfile.vaHigh * CONFIG.PESOS_SUPORTE_RESISTENCIA.VOLUME_PROFILE) +
+    (liquidez.resistencia * CONFIG.PESOS_SUPORTE_RESISTENCIA.LIQUIDEZ) +
+    (emaMedia * CONFIG.PESOS_SUPORTE_RESISTENCIA.EMA);
   
   if (tendencia.tendencia === "FORTE_ALTA") {
     const condicoesCompra = [
@@ -305,41 +340,34 @@ const calcularMedia = {
 function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   if (closes.length < periodo + 1) return 50;
   
-  // Cálculo inicial
-  if (closes.length === periodo + 1) {
+  // Inicialização do cache
+  if (!state.rsiCache.avgGain || !state.rsiCache.avgLoss) {
     let gains = 0, losses = 0;
     for (let i = 1; i <= periodo; i++) {
       const diff = closes[i] - closes[i - 1];
       if (diff > 0) gains += diff;
-      else losses -= diff; // Perdas são valores absolutos
+      else losses -= diff;
     }
     
-    const avgGain = gains / periodo;
-    const avgLoss = losses / periodo;
-    const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+    state.rsiCache.avgGain = gains / periodo;
+    state.rsiCache.avgLoss = losses / periodo;
+    
+    const rs = state.rsiCache.avgLoss === 0 ? Infinity : state.rsiCache.avgGain / state.rsiCache.avgLoss;
     return 100 - (100 / (1 + rs));
   }
   
   // Cálculo incremental
-  const prevRSI = state.rsiCache || 50;
   const diff = closes[closes.length - 1] - closes[closes.length - 2];
   
-  let avgGain = state.avgGainCache || 0;
-  let avgLoss = state.avgLossCache || 0;
-  
   if (diff > 0) {
-    avgGain = ((avgGain * (periodo - 1)) + diff) / periodo;
-    avgLoss = (avgLoss * (periodo - 1)) / periodo;
+    state.rsiCache.avgGain = ((state.rsiCache.avgGain * (periodo - 1)) + diff) / periodo;
+    state.rsiCache.avgLoss = (state.rsiCache.avgLoss * (periodo - 1)) / periodo;
   } else {
-    avgGain = (avgGain * (periodo - 1)) / periodo;
-    avgLoss = ((avgLoss * (periodo - 1)) - diff) / periodo;
+    state.rsiCache.avgGain = (state.rsiCache.avgGain * (periodo - 1)) / periodo;
+    state.rsiCache.avgLoss = ((state.rsiCache.avgLoss * (periodo - 1)) - diff) / periodo;
   }
   
-  // Atualizar cache para próxima iteração
-  state.avgGainCache = avgGain;
-  state.avgLossCache = avgLoss;
-  
-  const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+  const rs = state.rsiCache.avgLoss === 0 ? Infinity : state.rsiCache.avgGain / state.rsiCache.avgLoss;
   return 100 - (100 / (1 + rs));
 }
 
@@ -352,6 +380,8 @@ function calcularStochastic(highs, lows, closes,
     
     const kValues = [];
     for (let i = periodoK - 1; i < closes.length; i++) {
+      if (i - periodoK + 1 < 0) continue;
+      
       const sliceHigh = highs.slice(i - periodoK + 1, i + 1);
       const sliceLow = lows.slice(i - periodoK + 1, i + 1);
       const highestHigh = Math.max(...sliceHigh);
@@ -371,7 +401,7 @@ function calcularStochastic(highs, lows, closes,
     // Cálculo da linha %D (suavização do %K)
     const dValues = [];
     for (let i = periodoD - 1; i < kSuavizado.length; i++) {
-      dValues.push(calcularMedia.simples(kSuavizado.slice(i - periodoD + 1, i + 1), periodoD));
+      dValues.push(calcularMedia.simples(kSuavizado.slice(i - periodoD + 1, i + 1), periodoD);
     }
     
     return {
@@ -402,6 +432,7 @@ function calcularWilliams(highs, lows, closes, periodo = CONFIG.PERIODOS.WILLIAM
   }
 }
 
+// MACD com cálculo incremental
 function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA, 
                     lenta = CONFIG.PERIODOS.MACD_LENTA, 
                     sinal = CONFIG.PERIODOS.MACD_SINAL) {
@@ -410,6 +441,41 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
       return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
     }
 
+    // Se já temos cache, atualiza incrementalmente
+    if (state.macdCache.emaRapida !== null && state.macdCache.emaLenta !== null) {
+      const kRapida = 2 / (rapida + 1);
+      const kLenta = 2 / (lenta + 1);
+      const kSinal = 2 / (sinal + 1);
+      
+      const novoValor = closes[closes.length - 1];
+      
+      // Atualiza EMAs
+      state.macdCache.emaRapida = novoValor * kRapida + state.macdCache.emaRapida * (1 - kRapida);
+      state.macdCache.emaLenta = novoValor * kLenta + state.macdCache.emaLenta * (1 - kLenta);
+      
+      const novaMacdLinha = state.macdCache.emaRapida - state.macdCache.emaLenta;
+      state.macdCache.macdLine.push(novaMacdLinha);
+      
+      // Atualiza linha de sinal
+      if (state.macdCache.signalLine.length === 0) {
+        state.macdCache.signalLine.push(novaMacdLinha);
+      } else {
+        const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
+        const novoSignal = novaMacdLinha * kSinal + ultimoSinal * (1 - kSinal);
+        state.macdCache.signalLine.push(novoSignal);
+      }
+      
+      const ultimoMACD = novaMacdLinha;
+      const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
+      
+      return {
+        histograma: ultimoMACD - ultimoSinal,
+        macdLinha: ultimoMACD,
+        sinalLinha: ultimoSinal
+      };
+    }
+    
+    // Primeiro cálculo completo
     const emaRapida = calcularMedia.exponencial(closes, rapida);
     const emaLenta = calcularMedia.exponencial(closes, lenta);
     
@@ -419,6 +485,14 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
     
     const ultimoMACD = macdLinha[macdLinha.length - 1] || 0;
     const ultimoSinal = sinalLinha[sinalLinha.length - 1] || 0;
+    
+    // Salva no cache
+    state.macdCache = {
+      emaRapida: emaRapida[emaRapida.length - 1],
+      emaLenta: emaLenta[emaLenta.length - 1],
+      macdLine: macdLinha,
+      signalLine: sinalLinha
+    };
     
     return {
       histograma: ultimoMACD - ultimoSinal,
@@ -473,25 +547,22 @@ function calcularATR(dados, periodo = CONFIG.PERIODOS.ATR) {
   }
 }
 
-// Supertrend refatorado para cálculo sequencial
+// Supertrend otimizado com ATR global
 function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multiplicador = 3) {
   try {
     if (dados.length < periodo) return { direcao: 0, valor: 0 };
     
-    const superTrends = [];
-    const atrValues = [];
-    
-    // Calcular ATR para todo o conjunto de dados
-    for (let i = periodo; i < dados.length; i++) {
-      const slice = dados.slice(i - periodo, i);
-      atrValues.push(calcularATR(slice, periodo));
+    // Calcular ATR global uma vez
+    if (!state.atrGlobal) {
+      state.atrGlobal = calcularATR(dados, periodo);
     }
     
-    // Calcular Supertrend sequencialmente
+    const superTrends = [];
+    
     for (let i = periodo; i < dados.length; i++) {
       const current = dados[i];
       const hl2 = (current.high + current.low) / 2;
-      const atr = atrValues[i - periodo];
+      const atr = state.atrGlobal;
       
       const upperBand = hl2 + (multiplicador * atr);
       const lowerBand = hl2 - (multiplicador * atr);
@@ -526,7 +597,7 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
   }
 }
 
-// Volume Profile com buckets de tamanho fixo
+// Volume Profile com distribuição proporcional
 function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) {
   try {
     if (!Array.isArray(dados) || dados.length < periodo) return { pvp: 0, vaHigh: 0, vaLow: 0 };
@@ -545,7 +616,7 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
       buckets[bucketKey] = 0;
     }
     
-    // Distribuir volume pelos buckets
+    // Distribuir volume pelos buckets (proporcional ao tempo)
     for (const vela of slice) {
       const amplitude = vela.high - vela.low;
       if (amplitude === 0) continue;
@@ -555,6 +626,7 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
         priceRange.push(p.toFixed(5));
       }
       
+      // Distribuição proporcional
       const volumePorBucket = vela.volume / priceRange.length;
       for (const bucket of priceRange) {
         if (buckets[bucket] !== undefined) {
@@ -622,10 +694,12 @@ function calcularLiquidez(velas, periodo = CONFIG.PERIODOS.LIQUIDITY_ZONES) {
   };
 }
 
-// Detecção de divergências melhorada
+// Detecção de divergências com extremos melhorados
 function detectarDivergencias(closes, rsis, highs, lows) {
   try {
     const lookback = CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK;
+    const extremeLookback = CONFIG.PERIODOS.EXTREME_LOOKBACK;
+    
     if (closes.length < lookback || rsis.length < lookback) {
       return { divergenciaRSI: false, tipoDivergencia: "NENHUMA", divergenciaOculta: false };
     }
@@ -633,17 +707,25 @@ function detectarDivergencias(closes, rsis, highs, lows) {
     // Identificar máximos e mínimos significativos
     const findExtremes = (data, isHigh = true) => {
       const extremes = [];
-      for (let i = 3; i < data.length - 3; i++) {
-        if (isHigh) {
-          if (data[i] > data[i-1] && data[i] > data[i-2] && 
-              data[i] > data[i+1] && data[i] > data[i+2]) {
-            extremes.push({ index: i, value: data[i] });
+      for (let i = extremeLookback; i < data.length - extremeLookback; i++) {
+        let isExtreme = true;
+        
+        for (let j = 1; j <= extremeLookback; j++) {
+          if (isHigh) {
+            if (data[i] <= data[i-j] || data[i] <= data[i+j]) {
+              isExtreme = false;
+              break;
+            }
+          } else {
+            if (data[i] >= data[i-j] || data[i] >= data[i+j]) {
+              isExtreme = false;
+              break;
+            }
           }
-        } else {
-          if (data[i] < data[i-1] && data[i] < data[i-2] && 
-              data[i] < data[i+1] && data[i] < data[i+2]) {
-            extremes.push({ index: i, value: data[i] });
-          }
+        }
+        
+        if (isExtreme) {
+          extremes.push({ index: i, value: data[i] });
         }
       }
       return extremes;
@@ -743,12 +825,27 @@ async function analisarMercado() {
     const lows = dados.map(v => v.low);
     const volumes = dados.map(v => v.volume);
 
-    const ema8Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA);
-    const ema21Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA);
-    const ema200Array = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_LONGA);
-    const ema8 = ema8Array[ema8Array.length-1] || 0;
-    const ema21 = ema21Array[ema21Array.length-1] || 0;
-    const ema200 = ema200Array[ema200Array.length-1] || 0;
+    // EMA com cache incremental
+    const calcularEMAIncremental = (closes, periodo, cacheKey) => {
+      if (!state.emaCache[cacheKey] && closes.length >= periodo) {
+        const emaArray = calcularMedia.exponencial(closes, periodo);
+        state.emaCache[cacheKey] = emaArray[emaArray.length - 1];
+        return state.emaCache[cacheKey];
+      }
+      
+      if (state.emaCache[cacheKey]) {
+        const k = 2 / (periodo + 1);
+        const novoValor = closes[closes.length - 1];
+        state.emaCache[cacheKey] = novoValor * k + state.emaCache[cacheKey] * (1 - k);
+        return state.emaCache[cacheKey];
+      }
+      
+      return 0;
+    };
+
+    const ema8 = calcularEMAIncremental(closes, CONFIG.PERIODOS.EMA_CURTA, 'ema8');
+    const ema21 = calcularEMAIncremental(closes, CONFIG.PERIODOS.EMA_MEDIA, 'ema21');
+    const ema200 = calcularEMAIncremental(closes, CONFIG.PERIODOS.EMA_LONGA, 'ema200');
 
     const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME) || 1;
     const superTrend = calcularSuperTrend(dados);
@@ -768,7 +865,15 @@ async function analisarMercado() {
     
     const divergencias = detectarDivergencias(closes, rsiHistory, highs, lows);
 
-    const tendencia = avaliarTendencia(closes, ema8, ema21, ema200);
+    const tendencia = avaliarTendencia(
+      closes, 
+      ema8, 
+      ema21, 
+      ema200,
+      velaAtual.volume,
+      volumeMedia
+    );
+    
     state.tendenciaDetectada = tendencia.tendencia;
     state.forcaTendencia = tendencia.forca;
 
@@ -808,6 +913,7 @@ async function analisarMercado() {
         <li>📊 Suporte: ${state.suporteKey.toFixed(5)} | Resistência: ${state.resistenciaKey.toFixed(5)}</li>
         <li>⚠️ Divergência: ${divergencias.tipoDivergencia}</li>
         <li>🚦 SuperTrend: ${superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'} (${superTrend.valor.toFixed(5)})</li>
+        <li>💧 Volume: ${indicadores.volume} (Média: ${volumeMedia.toFixed(2)})</li>
       `;
     }
 
