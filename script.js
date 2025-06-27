@@ -88,7 +88,8 @@ const CONFIG = {
     ATR_LIMIAR: 0.0005,
     BUCKET_SIZE: 0.0005,
     VOLUME_CONFIRMACAO: 1.2,
-    LATERALIDADE_LIMIAR: 0.0003
+    // ▲ AUMENTO DE SENSIBILIDADE (166%)
+    LATERALIDADE_LIMIAR: 0.0008  // De 0.0003 para 0.0008
   },
   PESOS: {
     RSI: 1.7,
@@ -201,7 +202,9 @@ function consolidarTendencias(tendencias) {
   
   // Calcular tendência ponderada
   for (const [timeframe, dados] of Object.entries(tendencias)) {
-    const peso = CONFIG.PESOS_TIMEFRAME[timeframe] || 0.25;
+    // ▲ PESO EXTRA PARA M5
+    let peso = CONFIG.PESOS_TIMEFRAME[timeframe] || 0.25;
+    if (timeframe === "M5") peso *= 1.3;  // +30% de importância
     
     if (dados.tendencia === "FORTE_ALTA") {
       forcaFinal += dados.forca * peso;
@@ -280,7 +283,8 @@ function detectarLateralidade(closes, periodo = CONFIG.PERIODOS.ANALISE_LATERAL,
 // =============================================
 // CÁLCULO DINÂMICO DE SUPORTE/RESISTÊNCIA
 // =============================================
-function calcularZonasPreco(dados, periodo = 50) {
+// ▲ PERÍODO REDUZIDO DE 50 PARA 20 VELAS
+function calcularZonasPreco(dados, periodo = 20) {
   if (dados.length < periodo) periodo = dados.length;
   const slice = dados.slice(-periodo);
   const highs = slice.map(v => v.high);
@@ -306,8 +310,15 @@ function gerarSinal(indicadores, divergencias, lateral) {
     superTrend,
     volumeProfile,
     liquidez,
-    tendencia
+    tendencia,
+    volume,
+    volumeMedia
   } = indicadores;
+  
+  // ▲ VALIDAÇÃO DE VOLUME MÍNIMO
+  if (volume < (volumeMedia * 1.5)) {
+    return "ESPERAR";
+  }
   
   // Novo cálculo de suporte/resistência
   const zonas = calcularZonasPreco(state.dadosHistoricos.M1);
@@ -345,8 +356,8 @@ function gerarSinal(indicadores, divergencias, lateral) {
     }
   }
   
-  const variacao = state.resistenciaKey - state.suporteKey;
-  const limiteBreakout = variacao * 0.1;
+  // ▲ LIMITE FIXO DE BREAKOUT (2 PIPS)
+  const limiteBreakout = 0.0002;
   
   if (close > (state.resistenciaKey + limiteBreakout)) {
     return "CALL";
@@ -1000,9 +1011,15 @@ async function analisarMercado() {
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
-    // Aplicar cooldown
+    // ▲ VALIDAÇÃO DE VOLATILIDADE MÍNIMA
+    const atr = calcularATR(dadosM1);
+    if (atr < 0.0005) { // Mínimo 5 pips
+      sinal = "ESPERAR";
+    }
+    
+    // ▲ COOLDOWN REDUZIDO (66%)
     if (sinal !== "ESPERAR" && state.cooldown <= 0) {
-      state.cooldown = 3;
+      state.cooldown = 1; // De 3 para 1 minuto
     } else if (state.cooldown > 0) {
       state.cooldown--;
       sinal = "ESPERAR";
