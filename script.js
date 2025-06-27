@@ -23,7 +23,7 @@ const state = {
   resistenciaKey: 0,
   suporteKey: 0,
   // Inicialização de caches
-  rsiCache: { avgGain: 0, avgLoss: 0 },
+  rsiCache: { avgGain: 0, avgLoss: 0, initialized: false },
   emaCache: {
     ema8: null,
     ema21: null,
@@ -36,7 +36,8 @@ const state = {
     signalLine: []
   },
   superTrendCache: [],
-  atrGlobal: 0
+  atrGlobal: 0,
+  rsiHistory: []
 };
 
 const CONFIG = {
@@ -340,8 +341,8 @@ const calcularMedia = {
 function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   if (closes.length < periodo + 1) return 50;
   
-  // Inicialização do cache
-  if (!state.rsiCache.avgGain || !state.rsiCache.avgLoss) {
+  // Primeira inicialização
+  if (!state.rsiCache.initialized) {
     let gains = 0, losses = 0;
     for (let i = 1; i <= periodo; i++) {
       const diff = closes[i] - closes[i - 1];
@@ -351,6 +352,7 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
     
     state.rsiCache.avgGain = gains / periodo;
     state.rsiCache.avgLoss = losses / periodo;
+    state.rsiCache.initialized = true;
     
     const rs = state.rsiCache.avgLoss === 0 ? Infinity : state.rsiCache.avgGain / state.rsiCache.avgLoss;
     return 100 - (100 / (1 + rs));
@@ -376,14 +378,19 @@ function calcularStochastic(highs, lows, closes,
                           periodoK = CONFIG.PERIODOS.STOCH_K, 
                           periodoD = CONFIG.PERIODOS.STOCH_D) {
   try {
-    if (closes.length < periodoK + periodoD) return { k: 50, d: 50 };
+    if (closes.length < periodoK) return { k: 50, d: 50 };
     
     const kValues = [];
     for (let i = periodoK - 1; i < closes.length; i++) {
-      if (i - periodoK + 1 < 0) continue;
+      const startIndex = Math.max(0, i - periodoK + 1);
+      const sliceHigh = highs.slice(startIndex, i + 1);
+      const sliceLow = lows.slice(startIndex, i + 1);
       
-      const sliceHigh = highs.slice(i - periodoK + 1, i + 1);
-      const sliceLow = lows.slice(i - periodoK + 1, i + 1);
+      if (sliceHigh.length === 0 || sliceLow.length === 0) {
+        kValues.push(50);
+        continue;
+      }
+      
       const highestHigh = Math.max(...sliceHigh);
       const lowestLow = Math.min(...sliceLow);
       const range = highestHigh - lowestLow;
@@ -394,14 +401,18 @@ function calcularStochastic(highs, lows, closes,
     // Suavização da linha %K
     const kSuavizado = [];
     for (let i = periodoD - 1; i < kValues.length; i++) {
-      const mediaK = calcularMedia.simples(kValues.slice(i - periodoD + 1, i + 1), periodoD);
+      const startIndex = Math.max(0, i - periodoD + 1);
+      const slice = kValues.slice(startIndex, i + 1);
+      const mediaK = calcularMedia.simples(slice, periodoD) || 50;
       kSuavizado.push(mediaK);
     }
     
     // Cálculo da linha %D (suavização do %K)
     const dValues = [];
     for (let i = periodoD - 1; i < kSuavizado.length; i++) {
-      dValues.push(calcularMedia.simples(kSuavizado.slice(i - periodoD + 1, i + 1), periodoD);
+      const startIndex = Math.max(0, i - periodoD + 1);
+      const slice = kSuavizado.slice(startIndex, i + 1);
+      dValues.push(calcularMedia.simples(slice, periodoD) || 50);
     }
     
     return {
@@ -437,36 +448,25 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
                     lenta = CONFIG.PERIODOS.MACD_LENTA, 
                     sinal = CONFIG.PERIODOS.MACD_SINAL) {
   try {
-    if (closes.length < lenta + sinal) {
-      return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
-    }
-
-    // Se já temos cache, atualiza incrementalmente
-    if (state.macdCache.emaRapida !== null && state.macdCache.emaLenta !== null) {
-      const kRapida = 2 / (rapida + 1);
-      const kLenta = 2 / (lenta + 1);
-      const kSinal = 2 / (sinal + 1);
+    // Primeiro cálculo completo se não houver cache
+    if (state.macdCache.emaRapida === null || state.macdCache.emaLenta === null) {
+      const emaRapida = calcularMedia.exponencial(closes, rapida);
+      const emaLenta = calcularMedia.exponencial(closes, lenta);
       
-      const novoValor = closes[closes.length - 1];
+      const startIdx = Math.max(0, lenta - rapida);
+      const macdLinha = emaRapida.slice(startIdx).map((val, idx) => val - emaLenta[idx]);
+      const sinalLinha = calcularMedia.exponencial(macdLinha, sinal);
       
-      // Atualiza EMAs
-      state.macdCache.emaRapida = novoValor * kRapida + state.macdCache.emaRapida * (1 - kRapida);
-      state.macdCache.emaLenta = novoValor * kLenta + state.macdCache.emaLenta * (1 - kLenta);
+      const ultimoMACD = macdLinha[macdLinha.length - 1] || 0;
+      const ultimoSinal = sinalLinha[sinalLinha.length - 1] || 0;
       
-      const novaMacdLinha = state.macdCache.emaRapida - state.macdCache.emaLenta;
-      state.macdCache.macdLine.push(novaMacdLinha);
-      
-      // Atualiza linha de sinal
-      if (state.macdCache.signalLine.length === 0) {
-        state.macdCache.signalLine.push(novaMacdLinha);
-      } else {
-        const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
-        const novoSignal = novaMacdLinha * kSinal + ultimoSinal * (1 - kSinal);
-        state.macdCache.signalLine.push(novoSignal);
-      }
-      
-      const ultimoMACD = novaMacdLinha;
-      const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
+      // Salva no cache
+      state.macdCache = {
+        emaRapida: emaRapida[emaRapida.length - 1],
+        emaLenta: emaLenta[emaLenta.length - 1],
+        macdLine: macdLinha,
+        signalLine: sinalLinha
+      };
       
       return {
         histograma: ultimoMACD - ultimoSinal,
@@ -475,24 +475,31 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
       };
     }
     
-    // Primeiro cálculo completo
-    const emaRapida = calcularMedia.exponencial(closes, rapida);
-    const emaLenta = calcularMedia.exponencial(closes, lenta);
+    // Cálculo incremental
+    const kRapida = 2 / (rapida + 1);
+    const kLenta = 2 / (lenta + 1);
+    const kSinal = 2 / (sinal + 1);
     
-    const startIdx = lenta - rapida;
-    const macdLinha = emaRapida.slice(startIdx).map((val, idx) => val - emaLenta[idx]);
-    const sinalLinha = calcularMedia.exponencial(macdLinha, sinal);
+    const novoValor = closes[closes.length - 1];
     
-    const ultimoMACD = macdLinha[macdLinha.length - 1] || 0;
-    const ultimoSinal = sinalLinha[sinalLinha.length - 1] || 0;
+    // Atualiza EMAs
+    state.macdCache.emaRapida = novoValor * kRapida + state.macdCache.emaRapida * (1 - kRapida);
+    state.macdCache.emaLenta = novoValor * kLenta + state.macdCache.emaLenta * (1 - kLenta);
     
-    // Salva no cache
-    state.macdCache = {
-      emaRapida: emaRapida[emaRapida.length - 1],
-      emaLenta: emaLenta[emaLenta.length - 1],
-      macdLine: macdLinha,
-      signalLine: sinalLinha
-    };
+    const novaMacdLinha = state.macdCache.emaRapida - state.macdCache.emaLenta;
+    state.macdCache.macdLine.push(novaMacdLinha);
+    
+    // Atualiza linha de sinal
+    if (state.macdCache.signalLine.length === 0) {
+      state.macdCache.signalLine.push(novaMacdLinha);
+    } else {
+      const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
+      const novoSignal = novaMacdLinha * kSinal + ultimoSinal * (1 - kSinal);
+      state.macdCache.signalLine.push(novoSignal);
+    }
+    
+    const ultimoMACD = novaMacdLinha;
+    const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
     
     return {
       histograma: ultimoMACD - ultimoSinal,
@@ -553,44 +560,40 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
     if (dados.length < periodo) return { direcao: 0, valor: 0 };
     
     // Calcular ATR global uma vez
-    if (!state.atrGlobal) {
+    if (state.atrGlobal === 0) {
       state.atrGlobal = calcularATR(dados, periodo);
     }
     
-    const superTrends = [];
+    const current = dados[dados.length - 1];
+    const hl2 = (current.high + current.low) / 2;
+    const atr = state.atrGlobal;
     
-    for (let i = periodo; i < dados.length; i++) {
-      const current = dados[i];
-      const hl2 = (current.high + current.low) / 2;
-      const atr = state.atrGlobal;
+    const upperBand = hl2 + (multiplicador * atr);
+    const lowerBand = hl2 - (multiplicador * atr);
+    
+    let superTrend;
+    let direcao;
+    
+    if (state.superTrendCache.length === 0) {
+      // Primeiro valor
+      superTrend = upperBand;
+      direcao = 1;
+    } else {
+      const prev = dados[dados.length - 2];
+      const prevSuperTrend = state.superTrendCache[state.superTrendCache.length - 1];
       
-      const upperBand = hl2 + (multiplicador * atr);
-      const lowerBand = hl2 - (multiplicador * atr);
-      
-      let superTrend;
-      let direcao;
-      
-      if (i === periodo) {
-        // Primeiro valor
-        superTrend = upperBand;
+      if (prev.close > prevSuperTrend.valor) {
         direcao = 1;
+        superTrend = Math.max(lowerBand, prevSuperTrend.valor);
       } else {
-        const prev = dados[i - 1];
-        const prevSuperTrend = superTrends[superTrends.length - 1];
-        
-        if (prev.close > prevSuperTrend.valor) {
-          direcao = 1;
-          superTrend = Math.max(lowerBand, prevSuperTrend.valor);
-        } else {
-          direcao = -1;
-          superTrend = Math.min(upperBand, prevSuperTrend.valor);
-        }
+        direcao = -1;
+        superTrend = Math.min(upperBand, prevSuperTrend.valor);
       }
-      
-      superTrends.push({ direcao, valor: superTrend });
     }
     
-    return superTrends.length > 0 ? superTrends[superTrends.length - 1] : { direcao: 0, valor: 0 };
+    state.superTrendCache.push({ direcao, valor: superTrend });
+    return { direcao, valor: superTrend };
+    
   } catch (e) {
     console.error("Erro no cálculo SuperTrend:", e);
     return { direcao: 0, valor: 0 };
@@ -819,33 +822,28 @@ async function analisarMercado() {
   
   try {
     const dados = await obterDadosTwelveData();
+    
+    // Verifica se há dados suficientes
+    if (dados.length < 50) {
+      throw new Error(`Dados insuficientes (${dados.length} velas). Aguardando mais dados...`);
+    }
+    
     const velaAtual = dados[dados.length - 1];
     const closes = dados.map(v => v.close);
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
     const volumes = dados.map(v => v.volume);
 
-    // EMA com cache incremental
-    const calcularEMAIncremental = (closes, periodo, cacheKey) => {
-      if (!state.emaCache[cacheKey] && closes.length >= periodo) {
-        const emaArray = calcularMedia.exponencial(closes, periodo);
-        state.emaCache[cacheKey] = emaArray[emaArray.length - 1];
-        return state.emaCache[cacheKey];
-      }
-      
-      if (state.emaCache[cacheKey]) {
-        const k = 2 / (periodo + 1);
-        const novoValor = closes[closes.length - 1];
-        state.emaCache[cacheKey] = novoValor * k + state.emaCache[cacheKey] * (1 - k);
-        return state.emaCache[cacheKey];
-      }
-      
-      return 0;
+    // EMA com cálculo seguro
+    const calcularEMA = (dados, periodo) => {
+      if (dados.length < periodo) return 0;
+      const emaArray = calcularMedia.exponencial(dados, periodo);
+      return emaArray[emaArray.length - 1];
     };
 
-    const ema8 = calcularEMAIncremental(closes, CONFIG.PERIODOS.EMA_CURTA, 'ema8');
-    const ema21 = calcularEMAIncremental(closes, CONFIG.PERIODOS.EMA_MEDIA, 'ema21');
-    const ema200 = calcularEMAIncremental(closes, CONFIG.PERIODOS.EMA_LONGA, 'ema200');
+    const ema8 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
+    const ema21 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
+    const ema200 = calcularEMA(closes, CONFIG.PERIODOS.EMA_LONGA);
 
     const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME) || 1;
     const superTrend = calcularSuperTrend(dados);
@@ -856,14 +854,14 @@ async function analisarMercado() {
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
     
-    // Cálculo incremental de histórico RSI
-    const rsiHistory = state.rsiHistory || [];
-    for (let i = rsiHistory.length; i < closes.length; i++) {
-      rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
+    // Atualizar histórico RSI
+    if (state.rsiHistory.length < closes.length) {
+      for (let i = state.rsiHistory.length; i < closes.length; i++) {
+        state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
+      }
     }
-    state.rsiHistory = rsiHistory;
     
-    const divergencias = detectarDivergencias(closes, rsiHistory, highs, lows);
+    const divergencias = detectarDivergencias(closes, state.rsiHistory, highs, lows);
 
     const tendencia = avaliarTendencia(
       closes, 
@@ -926,6 +924,13 @@ async function analisarMercado() {
   } catch (e) {
     console.error("Erro na análise:", e);
     atualizarInterface("ERRO", 0, "ERRO", 0);
+    
+    // Mostra o erro na interface
+    const criteriosElement = document.getElementById("criterios");
+    if (criteriosElement) {
+      criteriosElement.innerHTML = `<li>ERRO: ${e.message}</li>`;
+    }
+    
     if (++state.tentativasErro > 3) setTimeout(() => location.reload(), 10000);
   } finally {
     state.leituraEmAndamento = false;
@@ -952,7 +957,7 @@ async function obterDadosTwelveData() {
       throw new Error(data.message || `Erro Twelve Data: ${data.code}`);
     }
     
-    const valores = data.values.reverse();
+    const valores = data.values ? data.values.reverse() : [];
     
     return valores.map(item => ({
       time: item.datetime,
