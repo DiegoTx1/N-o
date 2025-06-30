@@ -29,10 +29,8 @@ const CONFIG = {
     STOCH_D: 3,
     EMA_CURTA: 5,
     EMA_MEDIA: 13,
-    EMA_LONGA: 200,
     MACD_RAPIDA: 6,
     MACD_LENTA: 13,
-    MACD_SINAL: 9,
     ANALISE_LATERAL: 20,
     ATR: 14,
     SUPERTREND: 7
@@ -43,7 +41,6 @@ const CONFIG = {
     RSI_OVERSOLD: 30,
     STOCH_OVERBOUGHT: 85,
     STOCH_OVERSOLD: 15,
-    VARIACAO_LATERAL: 0.005,
     LATERALIDADE_LIMIAR: 0.0003
   },
   HORARIOS_OPERACAO: [
@@ -93,10 +90,13 @@ function avaliarTendencia(ema5, ema13) {
 // =============================================
 function detectarLateralidade(closes) {
   const periodo = CONFIG.PERIODOS.ANALISE_LATERAL;
-  const variacoes = [];
+  if (closes.length < periodo) return false;
   
-  for (let i = closes.length - periodo; i < closes.length - 1; i++) {
-    variacoes.push(Math.abs(closes[i + 1] - closes[i]));
+  const variacoes = [];
+  const slice = closes.slice(-periodo);
+  
+  for (let i = 1; i < slice.length; i++) {
+    variacoes.push(Math.abs(slice[i] - slice[i-1]));
   }
   
   const mediaVariacao = variacoes.reduce((a, b) => a + b, 0) / variacoes.length;
@@ -144,8 +144,8 @@ function gerarSinal(indicadores, lateral) {
   if (close < state.suporteKey - margemBreakout) return "PUT";
 
   // Sinais de reversão
-  if (rsi < 25 && close > emaCurta) return "CALL";
-  if (rsi > 75 && close < emaCurta) return "PUT";
+  if (rsi < 30 && close > emaCurta) return "CALL";
+  if (rsi > 70 && close < emaCurta) return "PUT";
 
   return "ESPERAR";
 }
@@ -206,6 +206,12 @@ function atualizarInterface(sinal, score) {
   if (scoreElement) {
     scoreElement.textContent = `Confiança: ${score}%`;
     scoreElement.style.color = score >= 85 ? '#00ff00' : score >= 70 ? '#ffff00' : '#ff0000';
+  }
+
+  // Atualizar a última análise
+  const ultimaAnaliseElement = document.getElementById("ultima-analise");
+  if (ultimaAnaliseElement) {
+    ultimaAnaliseElement.textContent = state.ultimaAtualizacao;
   }
 }
 
@@ -329,13 +335,19 @@ async function analisarMercado() {
     let sinal = gerarSinal(indicadores, lateral);
     const score = calcularScore(sinal, indicadores);
     
-    // Atualizar estado e interface
+    // Atualizar estado
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
-    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
+    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR", {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    
+    // Adicionar ao histórico
     state.ultimos.unshift(`${state.ultimaAtualizacao} - ${sinal} (${score}%)`);
     if (state.ultimos.length > 5) state.ultimos.pop();
     
+    // Atualizar interface
     atualizarInterface(sinal, score);
     
   } catch (e) {
@@ -381,8 +393,12 @@ function sincronizarTimer() {
   clearInterval(state.intervaloAtual);
   state.timer = 60;
   
+  const timerElement = document.getElementById("timer");
+  if (timerElement) {
+    timerElement.textContent = formatarTimer(state.timer);
+  }
+  
   state.intervaloAtual = setInterval(() => {
-    const timerElement = document.getElementById("timer");
     state.timer--;
     
     if (timerElement) {
@@ -401,17 +417,18 @@ function sincronizarTimer() {
 // INICIALIZAÇÃO
 // =============================================
 function iniciarAplicativo() {
-  setInterval(atualizarRelogio, 30000);
-  sincronizarTimer();
-  
   // Criar elementos mínimos da interface
   const container = document.createElement('div');
+  container.id = 'tx1-container';
   container.innerHTML = `
+    <h1>TX1</h1>
     <div id="painel">
-      <div id="hora">00:00</div>
-      <div id="timer">1:00</div>
-      <div id="comando">--</div>
-      <div id="score">--</div>
+      <div>Comando Atual: <span id="comando">--</span></div>
+      <div>Score de Confiança: <span id="score">--</span></div>
+      <div>Próxima Leitura em: <span id="timer">1:00</span></div>
+      <div>Última Análise: <span id="ultima-analise">--</span></div>
+      <div id="hora">--:--</div>
+      <h3>Últimos Sinais</h3>
       <ul id="ultimos"></ul>
     </div>
   `;
@@ -420,25 +437,44 @@ function iniciarAplicativo() {
   // Estilos básicos
   const style = document.createElement('style');
   style.textContent = `
-    #painel {
+    #tx1-container {
       font-family: Arial, sans-serif;
-      padding: 15px;
-      background: #1e2a38;
-      color: white;
-      border-radius: 8px;
-      width: 250px;
+      max-width: 300px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f5f5f5;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    #painel {
+      margin-top: 20px;
     }
     #comando {
-      font-size: 24px;
       font-weight: bold;
-      margin: 10px 0;
-      text-align: center;
     }
-    .call { color: #00ff00; }
-    .put { color: #ff0000; }
-    .esperar { color: #ffff00; }
+    .call { color: green; }
+    .put { color: red; }
+    .esperar { color: orange; }
+    #timer { 
+      font-weight: bold; 
+    }
+    #ultimos {
+      list-style: none;
+      padding: 0;
+    }
+    #ultimos li {
+      margin: 5px 0;
+      padding: 5px;
+      background: #eee;
+      border-radius: 5px;
+    }
   `;
   document.head.appendChild(style);
+  
+  // Iniciar processos
+  setInterval(atualizarRelogio, 1000);
+  sincronizarTimer();
+  atualizarRelogio();
 }
 
 document.addEventListener("DOMContentLoaded", iniciarAplicativo);
