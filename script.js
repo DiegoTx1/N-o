@@ -38,9 +38,7 @@ const state = {
   superTrendCache: [],
   atrGlobal: 0,
   rsiHistory: [],
-  cooldown: 0,
-  stopLoss: 0,
-  takeProfit: 0
+  cooldown: 0
 };
 
 const CONFIG = {
@@ -52,6 +50,8 @@ const CONFIG = {
   },
   PERIODOS: {
     RSI: 9,
+    STOCH_K: 14,
+    STOCH_D: 3,
     EMA_CURTA: 5,
     EMA_MEDIA: 13,
     EMA_LONGA: 200,
@@ -61,6 +61,7 @@ const CONFIG = {
     MACD_SINAL: 9,
     VELAS_CONFIRMACAO: 3,
     ANALISE_LATERAL: 20,
+    VWAP: 20,
     ATR: 14,
     SUPERTREND: 7,
     VOLUME_PROFILE: 50,
@@ -73,7 +74,10 @@ const CONFIG = {
     SCORE_MEDIO: 70,
     RSI_OVERBOUGHT: 70,
     RSI_OVERSOLD: 30,
+    STOCH_OVERBOUGHT: 85,
+    STOCH_OVERSOLD: 15,
     VARIACAO_LATERAL: 0.005,
+    VWAP_DESVIO: 0.005,
     ATR_LIMIAR: 0.0005,
     BUCKET_SIZE: 0.0005,
     VOLUME_CONFIRMACAO: 1.2,
@@ -84,15 +88,22 @@ const CONFIG = {
     MACD: 2.2,
     TENDENCIA: 2.8,
     VOLUME: 0.5,
+    STOCH: 1.2,
+    VWAP: 1.5,
     SUPERTREND: 1.9,
     VOLUME_PROFILE: 1.2,
     DIVERGENCIA: 2.0,
     LIQUIDITY: 1.8
   },
-  RISK_MULTIPLIER: {
-    STOP_LOSS: 1.5,
-    TAKE_PROFIT: 2
-  }
+  PESOS_SUPORTE_RESISTENCIA: {
+    VOLUME_PROFILE: 0.4,
+    LIQUIDEZ: 0.4,
+    EMA: 0.2
+  },
+  // NOVO: Horários de operação (Londres/NY em UTC)
+  HORARIOS_OPERACAO: [
+    { inicio: 7, fim: 17 } // 07:00 - 17:00 UTC (08:00 - 18:00 Londres)
+  ]
 };
 
 // =============================================
@@ -106,9 +117,24 @@ let currentKeyIndex = 0;
 let errorCount = 0;
 
 // =============================================
+// VERIFICAÇÃO DE HORÁRIO DE OPERAÇÃO
+// =============================================
+function verificarHorarioOperacao() {
+  const agoraUTC = new Date();
+  const horaUTC = agoraUTC.getUTCHours();
+  
+  for (const horario of CONFIG.HORARIOS_OPERACAO) {
+    if (horaUTC >= horario.inicio && horaUTC < horario.fim) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// =============================================
 // SISTEMA DE TENDÊNCIA OTIMIZADO PARA FOREX
 // =============================================
-function avaliarTendencia(closes, ema5, ema13) {
+function avaliarTendencia(closes, ema5, ema13, volumeAtual, volumeMedio) {
   const gradiente = (ema5 - ema13) / ema13 * 10000;
   const forca = Math.min(100, Math.abs(gradiente * 2));
   
@@ -157,53 +183,51 @@ function calcularZonasPreco(dados, periodo = 50) {
 }
 
 // =============================================
-// VERIFICADOR DE SESSÕES DE MERCADO
-// =============================================
-function verificarSessao() {
-  const now = new Date();
-  const horaUTC = now.getUTCHours();
-  // Sessão de Londres: 7h-16h UTC
-  // Sessão de Nova York: 12h-21h UTC
-  return (horaUTC >= 7 && horaUTC < 16) || (horaUTC >= 12 && horaUTC < 21);
-}
-
-// =============================================
 // GERADOR DE SINAIS DE ALTA PRECISÃO PARA EURUSD
 // =============================================
 function gerarSinal(indicadores, divergencias, lateral) {
   const {
     rsi,
+    stoch,
     macd,
     close,
     emaCurta,
     emaMedia,
     superTrend,
+    volumeProfile,
+    liquidez,
     tendencia
   } = indicadores;
   
-  // Calcular suporte/resistência
+  // Novo cálculo de suporte/resistência
   const zonas = calcularZonasPreco(state.dadosHistoricos);
   state.suporteKey = zonas.suporte;
   state.resistenciaKey = zonas.resistencia;
   
-  // Não operar em lateralidade
+  // Se estiver em lateralidade, forçar esperar
   if (lateral) {
     return "ESPERAR";
   }
 
-  // Não operar fora do horário de mercado
-  if (!verificarSessao()) {
-    return "ESPERAR (Fora de Sessão)";
+  // Priorizar tendência forte (ignorar divergências)
+  if (tendencia.forca > 80) {
+    if (tendencia.tendencia === "FORTE_ALTA" && close > emaCurta && macd.histograma > 0) {
+      return "CALL";
+    }
+    if (tendencia.tendencia === "FORTE_BAIXA" && close < emaCurta && macd.histograma < 0) {
+      return "PUT";
+    }
   }
 
   if (tendencia.tendencia === "FORTE_ALTA") {
     const condicoesCompra = [
       close > emaCurta,
       macd.histograma > 0,
+      stoch.k > 60,
       close > superTrend.valor && superTrend.direcao > 0
     ];
     
-    if (condicoesCompra.filter(Boolean).length >= 2) {
+    if (condicoesCompra.filter(Boolean).length >= 3) {
       return "CALL";
     }
   }
@@ -212,10 +236,11 @@ function gerarSinal(indicadores, divergencias, lateral) {
     const condicoesVenda = [
       close < emaCurta,
       macd.histograma < 0,
+      stoch.k < 40,
       close < superTrend.valor && superTrend.direcao < 0
     ];
     
-    if (condicoesVenda.filter(Boolean).length >= 2) {
+    if (condicoesVenda.filter(Boolean).length >= 3) {
       return "PUT";
     }
   }
@@ -232,12 +257,15 @@ function gerarSinal(indicadores, divergencias, lateral) {
   }
   
   if (divergencias.divergenciaRSI) {
-    if (divergencias.tipoDivergencia === "ALTA" && close > state.suporteKey) {
-      return "CALL";
-    }
-    
-    if (divergencias.tipoDivergencia === "BAIXA" && close < state.resistenciaKey) {
-      return "PUT";
+    // Ignorar divergências contra tendência forte
+    if (!tendencia.tendencia.includes("FORTE")) {
+      if (divergencias.tipoDivergencia === "ALTA" && close > state.suporteKey) {
+        return "CALL";
+      }
+      
+      if (divergencias.tipoDivergencia === "BAIXA" && close < state.resistenciaKey) {
+        return "PUT";
+      }
     }
   }
   
@@ -290,12 +318,19 @@ function atualizarRelogio() {
       second: '2-digit'
     });
     elementoHora.textContent = state.ultimaAtualizacao;
-    state.marketOpen = true;
+    state.marketOpen = verificarHorarioOperacao();
   }
 }
 
-function atualizarInterface(sinal, score, tendencia, forcaTendencia, stopLoss = 0, takeProfit = 0) {
-  if (!state.marketOpen) return;
+function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
+  if (!state.marketOpen) {
+    const comandoElement = document.getElementById("comando");
+    if (comandoElement) {
+      comandoElement.textContent = "Mercado Fechado";
+      comandoElement.className = "esperar";
+    }
+    return;
+  }
   
   const comandoElement = document.getElementById("comando");
   if (comandoElement) {
@@ -305,7 +340,6 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia, stopLoss = 
     if (sinal === "CALL") comandoElement.textContent += " 📈";
     else if (sinal === "PUT") comandoElement.textContent += " 📉";
     else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
-    else if (sinal.startsWith("ESPERAR")) comandoElement.textContent = sinal;
   }
   
   const scoreElement = document.getElementById("score");
@@ -322,18 +356,10 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia, stopLoss = 
     tendenciaElement.textContent = tendencia;
     forcaElement.textContent = `${forcaTendencia}%`;
   }
-
-  // Atualizar stop loss e take profit
-  const slElement = document.getElementById("stop-loss");
-  const tpElement = document.getElementById("take-profit");
-  if (slElement && tpElement) {
-    slElement.textContent = `Stop Loss: ${stopLoss.toFixed(5)}`;
-    tpElement.textContent = `Take Profit: ${takeProfit.toFixed(5)}`;
-  }
 }
 
 // =============================================
-// INDICADORES TÉCNICOS (SIMPLIFICADOS)
+// INDICADORES TÉCNICOS (AJUSTADOS PARA FOREX)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -389,6 +415,55 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   
   const rs = state.rsiCache.avgLoss === 0 ? Infinity : state.rsiCache.avgGain / state.rsiCache.avgLoss;
   return 100 - (100 / (1 + rs));
+}
+
+function calcularStochastic(highs, lows, closes, 
+                          periodoK = CONFIG.PERIODOS.STOCH_K, 
+                          periodoD = CONFIG.PERIODOS.STOCH_D) {
+  try {
+    if (closes.length < periodoK) return { k: 50, d: 50 };
+    
+    const kValues = [];
+    for (let i = periodoK - 1; i < closes.length; i++) {
+      const startIndex = Math.max(0, i - periodoK + 1);
+      const sliceHigh = highs.slice(startIndex, i + 1);
+      const sliceLow = lows.slice(startIndex, i + 1);
+      
+      if (sliceHigh.length === 0 || sliceLow.length === 0) {
+        kValues.push(50);
+        continue;
+      }
+      
+      const highestHigh = Math.max(...sliceHigh);
+      const lowestLow = Math.min(...sliceLow);
+      const range = highestHigh - lowestLow;
+      const k = range !== 0 ? ((closes[i] - lowestLow) / range) * 100 : 50;
+      kValues.push(k);
+    }
+    
+    const kSuavizado = [];
+    for (let i = periodoD - 1; i < kValues.length; i++) {
+      const startIndex = Math.max(0, i - periodoD + 1);
+      const slice = kValues.slice(startIndex, i + 1);
+      const mediaK = calcularMedia.simples(slice, periodoD) || 50;
+      kSuavizado.push(mediaK);
+    }
+    
+    const dValues = [];
+    for (let i = periodoD - 1; i < kSuavizado.length; i++) {
+      const startIndex = Math.max(0, i - periodoD + 1);
+      const slice = kSuavizado.slice(startIndex, i + 1);
+      dValues.push(calcularMedia.simples(slice, periodoD) || 50);
+    }
+    
+    return {
+      k: kSuavizado[kSuavizado.length - 1] || 50,
+      d: dValues[dValues.length - 1] || 50
+    };
+  } catch (e) {
+    console.error("Erro no cálculo Stochastic:", e);
+    return { k: 50, d: 50 };
+  }
 }
 
 function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA, 
@@ -451,6 +526,27 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
   } catch (e) {
     console.error("Erro no cálculo MACD:", e);
     return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+  }
+}
+
+function calcularVWAP(dados, periodo = CONFIG.PERIODOS.VWAP) {
+  try {
+    if (!Array.isArray(dados) || dados.length < periodo) return 0;
+    
+    const slice = dados.slice(-periodo);
+    let typicalPriceSum = 0;
+    let volumeSum = 0;
+    
+    for (const vela of slice) {
+      const typicalPrice = (vela.high + vela.low + vela.close) / 3;
+      typicalPriceSum += typicalPrice * vela.volume;
+      volumeSum += vela.volume;
+    }
+    
+    return volumeSum > 0 ? typicalPriceSum / volumeSum : 0;
+  } catch (e) {
+    console.error("Erro no cálculo VWAP:", e);
+    return 0;
   }
 }
 
@@ -586,13 +682,33 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
   }
 }
 
+function calcularLiquidez(velas, periodo = CONFIG.PERIODOS.LIQUIDITY_ZONES) {
+  const slice = velas.slice(-periodo);
+  const highNodes = [];
+  const lowNodes = [];
+  
+  for (let i = 3; i < slice.length - 3; i++) {
+    if (slice[i].high > slice[i-1].high && slice[i].high > slice[i+1].high) {
+      highNodes.push(slice[i].high);
+    }
+    if (slice[i].low < slice[i-1].low && slice[i].low < slice[i+1].low) {
+      lowNodes.push(slice[i].low);
+    }
+  }
+  
+  return {
+    resistencia: highNodes.length > 0 ? calcularMedia.simples(highNodes, highNodes.length) : 0,
+    suporte: lowNodes.length > 0 ? calcularMedia.simples(lowNodes, lowNodes.length) : 0
+  };
+}
+
 function detectarDivergencias(closes, rsis, highs, lows) {
   try {
     const lookback = CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK;
     const extremeLookback = CONFIG.PERIODOS.EXTREME_LOOKBACK;
     
     if (closes.length < lookback || rsis.length < lookback) {
-      return { divergenciaRSI: false, tipoDivergencia: "NENHUMA" };
+      return { divergenciaRSI: false, tipoDivergencia: "NENHUMA", divergenciaOculta: false };
     }
     
     const findExtremes = (data, isHigh = true) => {
@@ -653,19 +769,49 @@ function detectarDivergencias(closes, rsis, highs, lows) {
       }
     }
     
+    let divergenciaOcultaAlta = false;
+    let divergenciaOcultaBaixa = false;
+    
+    if (priceHighs.length >= 2 && rsiHighs.length >= 2) {
+      const lastPriceHigh = priceHighs[priceHighs.length - 1];
+      const prevPriceHigh = priceHighs[priceHighs.length - 2];
+      const lastRsiHigh = rsiHighs[rsiHighs.length - 1];
+      const prevRsiHigh = rsiHighs[rsiHighs.length - 2];
+      
+      if (lastPriceHigh.value < prevPriceHigh.value && 
+          lastRsiHigh.value > prevRsiHigh.value) {
+        divergenciaOcultaBaixa = true;
+      }
+    }
+    
+    if (priceLows.length >= 2 && rsiLows.length >= 2) {
+      const lastPriceLow = priceLows[priceLows.length - 1];
+      const prevPriceLow = priceLows[priceLows.length - 2];
+      const lastRsiLow = rsiLows[rsiLows.length - 1];
+      const prevRsiLow = rsiLows[rsiLows.length - 2];
+      
+      if (lastPriceLow.value > prevPriceLow.value && 
+          lastRsiLow.value < prevRsiLow.value) {
+        divergenciaOcultaAlta = true;
+      }
+    }
+    
     return {
       divergenciaRSI: divergenciaRegularAlta || divergenciaRegularBaixa,
+      divergenciaOculta: divergenciaOcultaAlta || divergenciaOcultaBaixa,
       tipoDivergencia: divergenciaRegularAlta ? "ALTA" : 
-                      divergenciaRegularBaixa ? "BAIXA" : "NENHUMA"
+                      divergenciaRegularBaixa ? "BAIXA" : 
+                      divergenciaOcultaAlta ? "OCULTA_ALTA" : 
+                      divergenciaOcultaBaixa ? "OCULTA_BAIXA" : "NENHUMA"
     };
   } catch (e) {
     console.error("Erro na detecção de divergências:", e);
-    return { divergenciaRSI: false, tipoDivergencia: "NENHUMA" };
+    return { divergenciaRSI: false, divergenciaOculta: false, tipoDivergencia: "NENHUMA" };
   }
 }
 
 // =============================================
-// CORE DO SISTEMA (ATUALIZADO)
+// CORE DO SISTEMA (ATUALIZADO PARA EURUSD)
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento || !state.marketOpen) return;
@@ -698,8 +844,10 @@ async function analisarMercado() {
     const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME) || 1;
     const superTrend = calcularSuperTrend(dados);
     const volumeProfile = calcularVolumeProfile(dados);
+    const liquidez = calcularLiquidez(dados);
     
     const rsi = calcularRSI(closes);
+    const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
     
     if (state.rsiHistory.length < closes.length) {
@@ -710,7 +858,13 @@ async function analisarMercado() {
     
     const divergencias = detectarDivergencias(closes, state.rsiHistory, highs, lows);
 
-    const tendencia = avaliarTendencia(closes, ema5, ema13);
+    const tendencia = avaliarTendencia(
+      closes, 
+      ema5, 
+      ema13, 
+      velaAtual.volume,
+      volumeMedia
+    );
     
     state.tendenciaDetectada = tendencia.tendencia;
     state.forcaTendencia = tendencia.forca;
@@ -719,6 +873,7 @@ async function analisarMercado() {
 
     const indicadores = {
       rsi,
+      stoch,
       macd,
       emaCurta: ema5,
       emaMedia: ema13,
@@ -727,37 +882,27 @@ async function analisarMercado() {
       volumeMedia,
       superTrend,
       volumeProfile,
+      liquidez,
       tendencia
     };
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
     // Aplicar cooldown
-    if (sinal !== "ESPERAR" && sinal !== "ESPERAR (Fora de Sessão)" && state.cooldown <= 0) {
+    if (sinal !== "ESPERAR" && state.cooldown <= 0) {
       state.cooldown = 3;
     } else if (state.cooldown > 0) {
       state.cooldown--;
-      sinal = "ESPERAR (Cooldown)";
+      sinal = "ESPERAR";
     }
 
     const score = calcularScore(sinal, indicadores, divergencias);
-
-    // Calcular stop loss e take profit
-    state.stopLoss = state.atrGlobal * CONFIG.RISK_MULTIPLIER.STOP_LOSS;
-    state.takeProfit = state.atrGlobal * CONFIG.RISK_MULTIPLIER.TAKE_PROFIT;
 
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
 
-    atualizarInterface(
-      sinal, 
-      score, 
-      state.tendenciaDetectada, 
-      state.forcaTendencia,
-      state.stopLoss,
-      state.takeProfit
-    );
+    atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
 
     const criteriosElement = document.getElementById("criterios");
     if (criteriosElement) {
@@ -766,6 +911,7 @@ async function analisarMercado() {
         <li>💰 Preço: ${indicadores.close.toFixed(5)}</li>
         <li>📉 RSI: ${rsi.toFixed(2)} ${rsi < 30 ? '🔻' : rsi > 70 ? '🔺' : ''}</li>
         <li>📊 MACD: ${macd.histograma.toFixed(6)} ${macd.histograma > 0 ? '🟢' : '🔴'}</li>
+        <li>📈 Stochastic: ${stoch.k.toFixed(2)}/${stoch.d.toFixed(2)}</li>
         <li>📌 Médias: EMA5 ${ema5.toFixed(5)} | EMA13 ${ema13.toFixed(5)}</li>
         <li>📊 Suporte: ${state.suporteKey.toFixed(5)} | Resistência: ${state.resistenciaKey.toFixed(5)}</li>
         <li>⚠️ Divergência: ${divergencias.tipoDivergencia}</li>
@@ -773,9 +919,6 @@ async function analisarMercado() {
         <li>💧 Volume: ${indicadores.volume} (Média: ${volumeMedia.toFixed(2)})</li>
         <li>🔄 Lateral: ${lateral ? 'SIM' : 'NÃO'}</li>
         <li>⏳ Cooldown: ${state.cooldown > 0 ? `${state.cooldown} min` : 'NÃO'}</li>
-        <li>⏰ Sessão: ${verificarSessao() ? 'ABERTA' : 'FECHADA'}</li>
-        <li>⛔ Stop Loss: ${state.stopLoss.toFixed(5)}</li>
-        <li>🎯 Take Profit: ${state.takeProfit.toFixed(5)}</li>
       `;
     }
 
@@ -787,7 +930,7 @@ async function analisarMercado() {
     state.tentativasErro = 0;
   } catch (e) {
     console.error("Erro na análise:", e);
-    atualizarInterface("ERRO", 0, "ERRO", 0, 0, 0);
+    atualizarInterface("ERRO", 0, "ERRO", 0);
     
     const criteriosElement = document.getElementById("criterios");
     if (criteriosElement) {
@@ -801,7 +944,7 @@ async function analisarMercado() {
 }
 
 // =============================================
-// FUNÇÕES DE DADOS
+// FUNÇÕES DE DADOS (TWELVE DATA API) COM ROTAÇÃO DE CHAVES
 // =============================================
 async function obterDadosTwelveData() {
   try {
@@ -831,13 +974,14 @@ async function obterDadosTwelveData() {
       volume: parseFloat(item.volume) || 1
     }));
   } catch (e) {
-    console.error("Erro ao obter dados:", e);
+    console.error("Erro ao obter dados da Twelve Data:", e);
     
     errorCount++;
     
     if (errorCount >= 2) {
       currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
       errorCount = 0;
+      console.log(`Alternando para chave: ${currentKeyIndex + 1}`);
     }
     
     throw e;
@@ -875,10 +1019,101 @@ function sincronizarTimer() {
 }
 
 // =============================================
+// BACKTESTING SIMPLIFICADO
+// =============================================
+async function executarBacktest(dias = 5) {
+  try {
+    const apiKey = API_KEYS[currentKeyIndex];
+    const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=1min&outputsize=${dias * 1440}&apikey=${apiKey}`;
+    
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Falha na API');
+    
+    const data = await response.json();
+    if (data.status === 'error') throw new Error(data.message);
+    
+    const velas = data.values.reverse().map(v => ({
+      open: parseFloat(v.open),
+      high: parseFloat(v.high),
+      low: parseFloat(v.low),
+      close: parseFloat(v.close),
+      volume: parseFloat(v.volume) || 1,
+      time: v.datetime
+    }));
+    
+    let acertos = 0;
+    let totalSinais = 0;
+    let resultados = [];
+    
+    // Simular operações minuto a minuto
+    for (let i = 100; i < velas.length; i++) {
+      const dadosAtual = velas.slice(0, i);
+      state.dadosHistoricos = dadosAtual;
+      
+      const vela = dadosAtual[dadosAtual.length - 1];
+      const closes = dadosAtual.map(v => v.close);
+      const highs = dadosAtual.map(v => v.high);
+      const lows = dadosAtual.map(v => v.low);
+      
+      // Calcular indicadores
+      const ema5 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA).pop();
+      const ema13 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA).pop();
+      const tendencia = avaliarTendencia(closes, ema5, ema13, 0, 0);
+      const lateral = detectarLateralidade(closes);
+      const rsi = calcularRSI(closes);
+      const stoch = calcularStochastic(highs, lows, closes);
+      const macd = calcularMACD(closes);
+      const divergencias = detectarDivergencias(closes, state.rsiHistory, highs, lows);
+      
+      const indicadores = {
+        rsi, stoch, macd, emaCurta: ema5, emaMedia: ema13,
+        close: vela.close, tendencia, volume: 0, volumeMedia: 0,
+        superTrend: {valor: 0, direcao: 0}, volumeProfile: {pvp: 0}, liquidez: {suporte: 0}
+      };
+      
+      const sinal = gerarSinal(indicadores, divergencias, lateral);
+      
+      if (sinal !== "ESPERAR") {
+        totalSinais++;
+        
+        // Verificar acerto (próxima vela)
+        const proximaVela = velas[i+1];
+        if (proximaVela) {
+          const movimento = (proximaVela.close - vela.close) / vela.close * 10000;
+          
+          if (
+            (sinal === "CALL" && movimento > 2) ||
+            (sinal === "PUT" && movimento < -2)
+          ) {
+            acertos++;
+            resultados.push({ time: vela.time, sinal, resultado: "ACERTO", movimento });
+          } else {
+            resultados.push({ time: vela.time, sinal, resultado: "ERRO", movimento });
+          }
+        }
+      }
+    }
+    
+    const taxaAcerto = totalSinais > 0 ? (acertos / totalSinais * 100) : 0;
+    
+    return {
+      totalSinais,
+      acertos,
+      taxaAcerto: taxaAcerto.toFixed(2),
+      resultados
+    };
+    
+  } catch (e) {
+    console.error("Erro no backtest:", e);
+    return { error: e.message };
+  }
+}
+
+// =============================================
 // INICIALIZAÇÃO
 // =============================================
 function iniciarAplicativo() {
-  const ids = ['comando','score','hora','timer','criterios','ultimos','stop-loss','take-profit'];
+  const ids = ['comando','score','hora','timer','criterios','ultimos'];
   const falt = ids.filter(id => !document.getElementById(id));
   
   if (falt.length > 0) {
@@ -904,12 +1139,21 @@ function iniciarAplicativo() {
   backtestBtn.style.borderRadius = '5px';
   backtestBtn.style.cursor = 'pointer';
   
-  backtestBtn.onclick = () => {
+  backtestBtn.onclick = async () => {
     backtestBtn.textContent = 'Calculando...';
-    setTimeout(() => {
-      backtestBtn.textContent = 'Backtest Completo';
-      setTimeout(() => backtestBtn.textContent = 'Executar Backtest (5 dias)', 3000);
-    }, 2000);
+    try {
+      const resultado = await executarBacktest(5);
+      
+      if (resultado.error) {
+        alert(`Erro: ${resultado.error}`);
+      } else {
+        alert(`Backtest completo!\nSinais: ${resultado.totalSinais}\nAcertos: ${resultado.acertos}\nTaxa: ${resultado.taxaAcerto}%`);
+        console.log("Detalhes:", resultado.resultados);
+      }
+    } catch (e) {
+      alert("Erro no backtest: " + e.message);
+    }
+    backtestBtn.textContent = 'Executar Backtest (5 dias)';
   };
   
   document.body.appendChild(backtestBtn);
