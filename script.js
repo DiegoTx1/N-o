@@ -1,5 +1,5 @@
 // =============================================
-// CONFIGURAÇÕES GLOBAIS (ATUALIZADAS)
+// CONFIGURAÇÕES GLOBAIS
 // =============================================
 const state = {
   timer: 60,
@@ -28,12 +28,12 @@ const CONFIG = {
     RSI_SOBRECOMPRA: 70
   },
   API_KEY: "9cf795b2a4f14d43a049ca935d174ebb",
-  API_TIMEOUT: 3000, // 3 segundos timeout
+  API_TIMEOUT: 3000,
   MAX_TENTATIVAS_API: 2
 };
 
 // =============================================
-// FUNÇÕES DO NÚCLEO (CORE) - OTIMIZADAS
+// FUNÇÕES DO NÚCLEO (CORE)
 // =============================================
 function calcularEMA(dados, periodo) {
   if (dados.length === 0) return 0;
@@ -51,7 +51,6 @@ function calcularRSI(closes) {
   let gains = 0;
   let losses = 0;
   
-  // Calcular apenas últimos 14 períodos para performance
   const start = Math.max(0, closes.length - 14);
   for (let i = start + 1; i < closes.length; i++) {
     const diff = closes[i] - closes[i-1];
@@ -68,7 +67,6 @@ function calcularRSI(closes) {
 function calcularSuporteResistencia(velas) {
   if (velas.length === 0) return { resistencia: 0, suporte: 0 };
   
-  // Calcular apenas últimos 20 velas
   const slice = velas.slice(-20);
   const highs = slice.map(v => v.high);
   const lows = slice.map(v => v.low);
@@ -130,13 +128,13 @@ function gerarSinalCore(velas) {
 }
 
 // =============================================
-// FUNÇÕES AUXILIARES (PROTEGIDAS CONTRA TRAVAMENTO)
+// FUNÇÕES AUXILIARES
 // =============================================
 function calcularVolatilidade(velas) {
   if (velas.length < 2) return 0;
   
   const variacoes = [];
-  const start = Math.max(0, velas.length - 20); // Últimas 20 velas
+  const start = Math.max(0, velas.length - 20);
   
   for (let i = start + 1; i < velas.length; i++) {
     variacoes.push(Math.abs(velas[i].close - velas[i-1].close));
@@ -148,7 +146,6 @@ function calcularVolatilidade(velas) {
 async function carregarDados() {
   if (state.dadosHistoricos.M1.length > 0) return;
   
-  // Usar dados locais se exceder tentativas
   if (state.tentativasAPI >= CONFIG.MAX_TENTATIVAS_API) {
     state.usarDadosLocais = true;
   }
@@ -186,9 +183,8 @@ async function carregarDados() {
       volume: parseFloat(item.volume) || 1
     }));
     
-    state.tentativasAPI = 0; // Resetar contador
+    state.tentativasAPI = 0;
   } catch (error) {
-    console.error("Erro ao carregar dados:", error);
     state.tentativasAPI++;
     state.dadosHistoricos.M1 = gerarDadosExemplo();
   }
@@ -216,10 +212,10 @@ function gerarDadosExemplo() {
 }
 
 // =============================================
-// SISTEMA PRINCIPAL (À PROVA DE TRAVAMENTOS)
+// SISTEMA PRINCIPAL
 // =============================================
 function determinarModo() {
-  return "core"; // Por enquanto só modo core
+  return "core";
 }
 
 function atualizarInterface(sinal) {
@@ -251,64 +247,70 @@ function atualizarInterface(sinal) {
 }
 
 async function analisarMercado() {
-  if (state.leituraEmAndamento) return;
+  if (state.leituraEmAndamento) {
+    console.warn("Tentativa de análise sobreposta!");
+    return;
+  }
   
   state.leituraEmAndamento = true;
-  const startTime = Date.now();
+  console.log("----- INÍCIO DA ANÁLISE -----");
   
   try {
-    // 1. Carregar dados (com timeout protegido)
-    await carregarDados();
+    if (state.dadosHistoricos.M1.length === 0) {
+      console.log("Recarregando dados...");
+      await carregarDados();
+    }
     
-    // 2. Calcular volatilidade
+    console.log(`Dados disponíveis: ${state.dadosHistoricos.M1.length} velas`);
+    
     state.volatilidade = calcularVolatilidade(state.dadosHistoricos.M1);
+    console.log(`Volatilidade calculada: ${state.volatilidade.toFixed(5)}`);
     
-    // 3. Determinar modo
     state.modo = determinarModo();
     
-    // 4. Gerar sinal
-    let sinal = gerarSinalCore(state.dadosHistoricos.M1);
+    const sinal = gerarSinalCore(state.dadosHistoricos.M1);
+    console.log(`Sinal gerado: ${sinal}`);
     
-    // 5. Atualizar estado
     state.ultimoSinal = sinal;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
     
-    // 6. Atualizar interface
     atualizarInterface(sinal);
+    console.log("Interface atualizada");
     
   } catch (error) {
     console.error("Erro na análise:", error);
     atualizarInterface("ERRO");
   } finally {
     state.leituraEmAndamento = false;
-    const duration = Date.now() - startTime;
-    console.log(`Análise concluída em ${duration}ms`);
+    console.log("----- FIM DA ANÁLISE -----");
   }
 }
 
 // =============================================
-// SISTEMA DE TIMER ROBUSTO
+// SISTEMA DE TIMER E INICIALIZAÇÃO (CONFIÁVEL)
 // =============================================
 function iniciarTimer() {
-  // Executar primeira análise imediatamente
-  analisarMercado().catch(console.error);
+  console.log("Timer iniciado");
+  state.timer = 60;
   
-  // Configurar timer periódico
   const timerInterval = setInterval(() => {
     if (state.leituraEmAndamento) {
-      return; // Não sobrepor análises
+      console.log("Análise em andamento, aguardando...");
+      return;
     }
     
     state.timer--;
-    
+    console.log(`Timer: ${state.timer}s`);
+
     const timerElement = document.getElementById("timer");
     if (timerElement) {
       timerElement.textContent = `0:${state.timer.toString().padStart(2, '0')}`;
     }
     
     if (state.timer <= 0) {
+      console.log("Tempo esgotado, iniciando nova análise...");
       state.timer = 60;
-      analisarMercado().catch(console.error);
+      analisarMercado();
     }
   }, 1000);
 }
@@ -324,28 +326,38 @@ function atualizarRelogio() {
   }
 }
 
-function iniciarAplicativo() {
-  // Tentar até 5 vezes encontrar elementos
-  let tentativas = 0;
-  const maxTentativas = 5;
+async function iniciarAplicativo() {
+  console.log("Iniciando aplicativo...");
   
-  const checkElements = () => {
+  // Passo 1: Carregar dados ANTES de tudo
+  try {
+    console.log("Carregando dados iniciais...");
+    await carregarDados();
+    console.log("Dados carregados com sucesso!");
+  } catch (error) {
+    console.error("Falha ao carregar dados:", error);
+  }
+
+  // Passo 2: Verificar UI
+  let tentativas = 0;
+  const verificarUI = () => {
     tentativas++;
-    if (document.getElementById("comando") && document.getElementById("timer")) {
-      // Elementos prontos, iniciar sistemas
-      iniciarTimer();
-      setInterval(atualizarRelogio, 1000);
+    if (tentativas > 10) {
+      console.error("Elementos críticos não encontrados após 10 tentativas");
       return;
     }
-    
-    if (tentativas < maxTentativas) {
-      setTimeout(checkElements, 500);
+
+    if (document.getElementById("comando") && document.getElementById("timer")) {
+      console.log("Elementos de UI prontos!");
+      iniciarTimer();
+      setInterval(atualizarRelogio, 1000);
+      analisarMercado(); // Primeira análise
     } else {
-      console.error("Elementos críticos não encontrados após 5 tentativas");
+      setTimeout(verificarUI, 500);
     }
   };
-  
-  checkElements();
+
+  verificarUI();
 }
 
 // Iniciar quando o documento estiver pronto
