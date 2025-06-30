@@ -11,7 +11,7 @@ const state = {
   tentativasAPI: 0,
   usarDadosLocais: false,
   volatilidade: 0,
-  timerInterval: null // Adicionado para controle do intervalo
+  timerInterval: null
 };
 
 const CONFIG = {
@@ -21,13 +21,15 @@ const CONFIG = {
     EMA_LENTA: 20,
     RSI_PERIODO: 9,
     VOLUME_PERIODO: 10,
-    SR_LOOKBACK: 20
+    SR_LOOKBACK: 20,
+    EMA_200: 200 // Adicionado EMA 200
   },
   LIMIARES: {
     VOLATILIDADE_ALTA: 0.005,
-    VOLUME_ALERTA: 1.8,
-    RSI_SOBREVENDA: 30,
-    RSI_SOBRECOMPRA: 70
+    VOLUME_ALERTA: 1.5, // Relaxado de 1.8 para 1.5
+    RSI_SOBREVENDA: 35, // Relaxado de 30 para 35
+    RSI_SOBRECOMPRA: 65, // Relaxado de 70 para 65
+    SCORE_MINIMO: 70 // Pontuação mínima para emitir sinal
   },
   API_KEY: "9cf795b2a4f14d43a049ca935d174ebb",
   API_TIMEOUT: 3000,
@@ -92,7 +94,9 @@ function gerarSinalCore(velas) {
   
   const emaCurta = calcularEMA(closes, CONFIG.CORE.EMA_RAPIDA);
   const emaLonga = calcularEMA(closes, CONFIG.CORE.EMA_LENTA);
+  const ema200 = calcularEMA(closes, CONFIG.CORE.EMA_200); // Adicionado EMA 200
   const tendenciaAlta = emaCurta > emaLonga;
+  const acimaMedia200 = closes[closes.length-1] > ema200; // Confirmação de tendência
   
   const rsi = calcularRSI(closes);
   
@@ -108,15 +112,30 @@ function gerarSinalCore(velas) {
   let pertoResistencia = false;
   
   if (intervalo > 0) {
-    pertoSuporte = (precoAtual - sr.suporte) < (intervalo * 0.1);
-    pertoResistencia = (sr.resistencia - precoAtual) < (intervalo * 0.1);
+    // Ampliado de 10% para 15%
+    pertoSuporte = (precoAtual - sr.suporte) < (intervalo * 0.15);
+    pertoResistencia = (sr.resistencia - precoAtual) < (intervalo * 0.15);
   }
 
-  if (tendenciaAlta && rsi < CONFIG.LIMIARES.RSI_SOBREVENDA && volumeAlto && pertoSuporte) {
+  // Sistema de pontuação flexível
+  let pontosCall = 0;
+  let pontosPut = 0;
+  
+  if (tendenciaAlta && acimaMedia200) pontosCall += 30;
+  if (rsi < CONFIG.LIMIARES.RSI_SOBREVENDA) pontosCall += 20;
+  if (volumeAlto) pontosCall += 20;
+  if (pertoSuporte) pontosCall += 30;
+  
+  if (!tendenciaAlta && !acimaMedia200) pontosPut += 30;
+  if (rsi > CONFIG.LIMIARES.RSI_SOBRECOMPRA) pontosPut += 20;
+  if (volumeAlto) pontosPut += 20;
+  if (pertoResistencia) pontosPut += 30;
+  
+  if (pontosCall >= CONFIG.LIMIARES.SCORE_MINIMO) {
     return "CALL";
   }
   
-  if (!tendenciaAlta && rsi > CONFIG.LIMIARES.RSI_SOBRECOMPRA && volumeAlto && pertoResistencia) {
+  if (pontosPut >= CONFIG.LIMIARES.SCORE_MINIMO) {
     return "PUT";
   }
   
@@ -153,8 +172,9 @@ async function carregarDados() {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), CONFIG.API_TIMEOUT);
     
+    // Aumentado de 50 para 100 velas
     const response = await fetch(
-      `https://api.twelvedata.com/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=1min&outputsize=50&apikey=${CONFIG.API_KEY}`,
+      `https://api.twelvedata.com/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=1min&outputsize=100&apikey=${CONFIG.API_KEY}`,
       { signal: controller.signal }
     );
     
@@ -189,7 +209,7 @@ function gerarDadosExemplo() {
   const dados = [];
   let preco = 1.0800;
   
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 100; i++) { // Aumentado para 100 velas
     const variacao = (Math.random() - 0.5) * 0.001;
     preco += variacao;
     
@@ -220,6 +240,11 @@ function atualizarInterface(sinal) {
     
     comandoElement.textContent = sinal;
     comandoElement.className = sinal.toLowerCase();
+    
+    // Adicionar ícones para melhor visualização
+    if (sinal === "CALL") comandoElement.textContent += " 📈";
+    else if (sinal === "PUT") comandoElement.textContent += " 📉";
+    else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
     
     const modoElement = document.getElementById("modo");
     if (modoElement) {
