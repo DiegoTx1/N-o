@@ -1,5 +1,5 @@
 // =============================================
-// CONFIGURAÇÕES GLOBAIS
+// CONFIGURAÇÕES GLOBAIS (ATUALIZADAS)
 // =============================================
 const state = {
   timer: 60,
@@ -9,7 +9,8 @@ const state = {
   modo: "core",
   ultimoSinal: "ESPERAR",
   tentativasAPI: 0,
-  usarDadosLocais: false
+  usarDadosLocais: false,
+  volatilidade: 0 // Adicionado
 };
 
 const CONFIG = {
@@ -33,7 +34,7 @@ const CONFIG = {
 };
 
 // =============================================
-// FUNÇÕES DO NÚCLEO (CORE)
+// FUNÇÕES DO NÚCLEO (CORE) - OTIMIZADAS
 // =============================================
 function calcularEMA(dados, periodo) {
   if (dados.length === 0) return 0;
@@ -64,6 +65,7 @@ function calcularRSI(closes) {
   return avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
 }
 
+// CORREÇÃO: Cálculo simplificado de S/R
 function calcularSuporteResistencia(velas) {
   if (velas.length === 0) return { resistencia: 0, suporte: 0 };
   
@@ -71,13 +73,9 @@ function calcularSuporteResistencia(velas) {
   const highs = slice.map(v => v.high);
   const lows = slice.map(v => v.low);
   
-  const maxHigh = Math.max(...highs);
-  const minLow = Math.min(...lows);
-  const pivot = (maxHigh + minLow + slice[slice.length-1].close) / 3;
-  
   return {
-    resistencia: pivot + (maxHigh - minLow),
-    suporte: pivot - (maxHigh - minLow)
+    resistencia: Math.max(...highs),
+    suporte: Math.min(...lows)
   };
 }
 
@@ -92,30 +90,29 @@ function gerarSinalCore(velas) {
   const closes = velas.map(v => v.close);
   const volumes = velas.map(v => v.volume);
   
-  // 1. Tendência (EMAs)
   const emaCurta = calcularEMA(closes, CONFIG.CORE.EMA_RAPIDA);
   const emaLonga = calcularEMA(closes, CONFIG.CORE.EMA_LENTA);
   const tendenciaAlta = emaCurta > emaLonga;
   
-  // 2. Momentum (RSI)
   const rsi = calcularRSI(closes);
   
-  // 3. Volume
   const volumeMedio = calcularMediaSimples(volumes.slice(-CONFIG.CORE.VOLUME_PERIODO));
   const volumeAtual = volumes[volumes.length-1];
   const volumeAlto = volumeAtual > (volumeMedio * CONFIG.LIMIARES.VOLUME_ALERTA);
   
-  // 4. Suporte/Resistência
   const sr = calcularSuporteResistencia(velas);
   const precoAtual = closes[closes.length-1];
-  const distanciaSuporte = Math.abs(precoAtual - sr.suporte);
-  const distanciaResistencia = Math.abs(precoAtual - sr.resistencia);
   const intervalo = sr.resistencia - sr.suporte;
   
-  const pertoSuporte = intervalo !== 0 && distanciaSuporte < intervalo * 0.1;
-  const pertoResistencia = intervalo !== 0 && distanciaResistencia < intervalo * 0.1;
+  // CORREÇÃO: Verificação de proximidade corrigida
+  let pertoSuporte = false;
+  let pertoResistencia = false;
+  
+  if (intervalo > 0) {
+    pertoSuporte = (precoAtual - sr.suporte) < (intervalo * 0.1);
+    pertoResistencia = (sr.resistencia - precoAtual) < (intervalo * 0.1);
+  }
 
-  // Lógica de decisão
   if (tendenciaAlta && rsi < CONFIG.LIMIARES.RSI_SOBREVENDA && volumeAlto && pertoSuporte) {
     return "CALL";
   }
@@ -128,7 +125,7 @@ function gerarSinalCore(velas) {
 }
 
 // =============================================
-// FUNÇÕES AUXILIARES
+// FUNÇÕES AUXILIARES (PROTEGIDAS CONTRA TRAVAMENTO)
 // =============================================
 function calcularVolatilidade(velas) {
   if (velas.length < 2) return 0;
@@ -143,9 +140,8 @@ function calcularVolatilidade(velas) {
   return calcularMediaSimples(variacoes);
 }
 
+// CORREÇÃO: Removida verificação de dados existentes
 async function carregarDados() {
-  if (state.dadosHistoricos.M1.length > 0) return;
-  
   if (state.tentativasAPI >= CONFIG.MAX_TENTATIVAS_API) {
     state.usarDadosLocais = true;
   }
@@ -185,6 +181,7 @@ async function carregarDados() {
     
     state.tentativasAPI = 0;
   } catch (error) {
+    console.error("Erro ao carregar dados:", error);
     state.tentativasAPI++;
     state.dadosHistoricos.M1 = gerarDadosExemplo();
   }
@@ -212,7 +209,7 @@ function gerarDadosExemplo() {
 }
 
 // =============================================
-// SISTEMA PRINCIPAL
+// SISTEMA PRINCIPAL (À PROVA DE TRAVAMENTOS)
 // =============================================
 function determinarModo() {
   return "core";
@@ -247,70 +244,45 @@ function atualizarInterface(sinal) {
 }
 
 async function analisarMercado() {
-  if (state.leituraEmAndamento) {
-    console.warn("Tentativa de análise sobreposta!");
-    return;
-  }
+  if (state.leituraEmAndamento) return;
   
   state.leituraEmAndamento = true;
-  console.log("----- INÍCIO DA ANÁLISE -----");
   
   try {
-    if (state.dadosHistoricos.M1.length === 0) {
-      console.log("Recarregando dados...");
-      await carregarDados();
-    }
-    
-    console.log(`Dados disponíveis: ${state.dadosHistoricos.M1.length} velas`);
-    
+    await carregarDados();
     state.volatilidade = calcularVolatilidade(state.dadosHistoricos.M1);
-    console.log(`Volatilidade calculada: ${state.volatilidade.toFixed(5)}`);
-    
     state.modo = determinarModo();
-    
-    const sinal = gerarSinalCore(state.dadosHistoricos.M1);
-    console.log(`Sinal gerado: ${sinal}`);
-    
+    let sinal = gerarSinalCore(state.dadosHistoricos.M1);
     state.ultimoSinal = sinal;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
-    
     atualizarInterface(sinal);
-    console.log("Interface atualizada");
-    
   } catch (error) {
     console.error("Erro na análise:", error);
     atualizarInterface("ERRO");
   } finally {
     state.leituraEmAndamento = false;
-    console.log("----- FIM DA ANÁLISE -----");
   }
 }
 
 // =============================================
-// SISTEMA DE TIMER E INICIALIZAÇÃO (CONFIÁVEL)
+// SISTEMA DE TIMER ROBUSTO
 // =============================================
 function iniciarTimer() {
-  console.log("Timer iniciado");
-  state.timer = 60;
+  analisarMercado().catch(console.error);
   
   const timerInterval = setInterval(() => {
-    if (state.leituraEmAndamento) {
-      console.log("Análise em andamento, aguardando...");
-      return;
-    }
+    if (state.leituraEmAndamento) return;
     
     state.timer--;
-    console.log(`Timer: ${state.timer}s`);
-
+    
     const timerElement = document.getElementById("timer");
     if (timerElement) {
       timerElement.textContent = `0:${state.timer.toString().padStart(2, '0')}`;
     }
     
     if (state.timer <= 0) {
-      console.log("Tempo esgotado, iniciando nova análise...");
       state.timer = 60;
-      analisarMercado();
+      analisarMercado().catch(console.error);
     }
   }, 1000);
 }
@@ -326,39 +298,26 @@ function atualizarRelogio() {
   }
 }
 
-async function iniciarAplicativo() {
-  console.log("Iniciando aplicativo...");
-  
-  // Passo 1: Carregar dados ANTES de tudo
-  try {
-    console.log("Carregando dados iniciais...");
-    await carregarDados();
-    console.log("Dados carregados com sucesso!");
-  } catch (error) {
-    console.error("Falha ao carregar dados:", error);
-  }
-
-  // Passo 2: Verificar UI
+function iniciarAplicativo() {
   let tentativas = 0;
-  const verificarUI = () => {
+  const maxTentativas = 5;
+  
+  const checkElements = () => {
     tentativas++;
-    if (tentativas > 10) {
-      console.error("Elementos críticos não encontrados após 10 tentativas");
-      return;
-    }
-
     if (document.getElementById("comando") && document.getElementById("timer")) {
-      console.log("Elementos de UI prontos!");
       iniciarTimer();
       setInterval(atualizarRelogio, 1000);
-      analisarMercado(); // Primeira análise
+      return;
+    }
+    
+    if (tentativas < maxTentativas) {
+      setTimeout(checkElements, 500);
     } else {
-      setTimeout(verificarUI, 500);
+      console.error("Elementos críticos não encontrados após 5 tentativas");
     }
   };
-
-  verificarUI();
+  
+  checkElements();
 }
 
-// Iniciar quando o documento estiver pronto
 document.addEventListener("DOMContentLoaded", iniciarAplicativo);
