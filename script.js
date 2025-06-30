@@ -10,7 +10,7 @@ const state = {
   ultimoSinal: "ESPERAR",
   tentativasAPI: 0,
   usarDadosLocais: false,
-  volatilidade: 0 // Adicionado
+  volatilidade: 0
 };
 
 const CONFIG = {
@@ -279,11 +279,12 @@ function iniciarTimer() {
       timerElement.textContent = `0:${state.timer.toString().padStart(2, '0')}`;
     }
     
-    // CORREÇÃO: Só resetar o timer APÓS iniciar análise
+    // CORREÇÃO DEFINITIVA: Executar análise ANTES do reset
     if (state.timer <= 0) {
-      // Inicia análise ANTES do reset
+      // 1. Executar análise imediatamente
       analisarMercado().catch(console.error);
-      // Reset do timer APÓS iniciar análise
+      
+      // 2. Resetar timer APÓS iniciar análise
       state.timer = 60;
     }
   }, 1000);
