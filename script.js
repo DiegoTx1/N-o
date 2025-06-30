@@ -26,20 +26,18 @@ const state = {
   },
   resistenciaKey: 0,
   suporteKey: 0,
-  // Inicialização de caches
-  rsiCache: { avgGain: 0, avgLoss: 0, initialized: false },
-  emaCache: {
-    ema5: null,
-    ema13: null,
-    ema200: null
-  },
+  // Cache otimizado para indicadores
+  rsiCache: { avgGain: 0, avgLoss: 0, initialized: false, ultimoIndice: -1 },
+  emaCache: {},
   macdCache: {
     emaRapida: null,
     emaLenta: null,
     macdLine: [],
-    signalLine: []
+    signalLine: [],
+    originalLength: 0,
+    initialized: false
   },
-  superTrendCache: [],
+  superTrendCache: { valor: 0, direcao: 0, ultimoIndice: -1 },
   atrGlobal: 0,
   rsiHistory: [],
   cooldown: 0
@@ -88,8 +86,7 @@ const CONFIG = {
     ATR_LIMIAR: 0.0005,
     BUCKET_SIZE: 0.0005,
     VOLUME_CONFIRMACAO: 1.2,
-    // ▲ AUMENTO DE SENSIBILIDADE (166%)
-    LATERALIDADE_LIMIAR: 0.0008  // De 0.0003 para 0.0008
+    LATERALIDADE_LIMIAR: 0.0008
   },
   PESOS: {
     RSI: 1.7,
@@ -109,13 +106,20 @@ const CONFIG = {
     LIQUIDEZ: 0.4,
     EMA: 0.2
   },
-  // Novos pesos para tendência multi-timeframe
   PESOS_TIMEFRAME: {
     M15: 0.4,
     M5: 0.35,
     M1: 0.25
   }
 };
+
+// =============================================
+// FUNÇÕES AUXILIARES
+// =============================================
+function arraysIguais(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((val, i) => val === b[i]);
+}
 
 // =============================================
 // GERENCIADOR DE CHAVES API
@@ -128,9 +132,8 @@ let currentKeyIndex = 0;
 let errorCount = 0;
 
 // =============================================
-// FUNÇÕES PARA MULTI-TIMEFRAME (NOVAS)
+// FUNÇÕES PARA MULTI-TIMEFRAME
 // =============================================
-
 async function obterDadosMultiTimeframe() {
   const timeframes = ['1min', '5min', '15min'];
   const dados = {};
@@ -140,12 +143,20 @@ async function obterDadosMultiTimeframe() {
       const apiKey = API_KEYS[currentKeyIndex];
       const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=${tf}&outputsize=100&apikey=${apiKey}`;
       
-      const response = await fetch(url);
+      // Adicionar timeout para evitar travamentos
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
       const data = await response.json();
       
       if (data.status === 'error') throw new Error(data.message);
+      if (!data.values || !Array.isArray(data.values)) {
+        throw new Error("Formato de dados inválido da API");
+      }
       
-      // Converter para chaves consistentes
       const tfKey = tf === '1min' ? 'M1' : tf === '5min' ? 'M5' : 'M15';
       dados[tfKey] = data.values.reverse().map(item => ({
         time: item.datetime,
@@ -155,28 +166,33 @@ async function obterDadosMultiTimeframe() {
         close: parseFloat(item.close),
         volume: parseFloat(item.volume) || 1
       }));
+      errorCount = 0; // Resetar contador de erros após sucesso
     } catch (e) {
       console.error(`Erro no timeframe ${tf}:`, e);
       currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-      throw e;
+      errorCount++;
+      
+      // Manter dados anteriores em caso de erro
+      const tfKey = tf === '1min' ? 'M1' : tf === '5min' ? 'M5' : 'M15';
+      dados[tfKey] = state.dadosHistoricos[tfKey] || [];
+      
+      // Esperar progressivamente mais a cada erro
+      await new Promise(resolve => 
+        setTimeout(resolve, Math.min(60000, 1000 * Math.pow(2, errorCount))
+      );
     }
   }
   
   return dados;
 }
 
-function calcularTendenciaTimeframe(closes) {
+function calcularTendenciaTimeframe(closes, timeframe) {
   if (closes.length < CONFIG.PERIODOS.EMA_MEDIA) {
     return { tendencia: "NEUTRA", forca: 0 };
   }
 
-  const calcularEMA = (dados, periodo) => {
-    const emaArray = calcularMedia.exponencial(dados, periodo);
-    return emaArray[emaArray.length - 1];
-  };
-
-  const ema5 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
-  const ema13 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
+  const ema5 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA, timeframe);
+  const ema13 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA, timeframe);
   
   const gradiente = (ema5 - ema13) / ema13 * 10000;
   const forca = Math.min(100, Math.abs(gradiente * 2));
@@ -200,11 +216,20 @@ function consolidarTendencias(tendencias) {
   let tendenciaFinal = "NEUTRA";
   let forcaFinal = 0;
   
-  // Calcular tendência ponderada
+  // Calcular volatilidade relativa para pesos dinâmicos
+  const volatilidades = {};
+  let maxATR = 0;
+  
   for (const [timeframe, dados] of Object.entries(tendencias)) {
-    // ▲ PESO EXTRA PARA M5
-    let peso = CONFIG.PESOS_TIMEFRAME[timeframe] || 0.25;
-    if (timeframe === "M5") peso *= 1.3;  // +30% de importância
+    const atr = dados.atr || 0.0001;
+    volatilidades[timeframe] = atr;
+    if (atr > maxATR) maxATR = atr;
+  }
+  
+  for (const [timeframe, dados] of Object.entries(tendencias)) {
+    const pesoBase = CONFIG.PESOS_TIMEFRAME[timeframe] || 0.25;
+    const pesoVolatilidade = maxATR > 0 ? (volatilidades[timeframe] / maxATR) : 1;
+    const peso = pesoBase * pesoVolatilidade;
     
     if (dados.tendencia === "FORTE_ALTA") {
       forcaFinal += dados.forca * peso;
@@ -224,7 +249,6 @@ function consolidarTendencias(tendencias) {
     }
   }
   
-  // Classificar força final
   forcaFinal = Math.min(100, Math.max(0, forcaFinal));
   
   if (forcaFinal > 75) {
@@ -245,29 +269,7 @@ function consolidarTendencias(tendencias) {
 }
 
 // =============================================
-// SISTEMA DE TENDÊNCIA OTIMIZADO PARA FOREX
-// =============================================
-function avaliarTendencia(closes, ema5, ema13, volumeAtual, volumeMedio) {
-  const gradiente = (ema5 - ema13) / ema13 * 10000;
-  const forca = Math.min(100, Math.abs(gradiente * 2));
-  
-  if (forca > 75) {
-    return gradiente > 0 
-      ? { tendencia: "FORTE_ALTA", forca }
-      : { tendencia: "FORTE_BAIXA", forca };
-  }
-  
-  if (forca > 40) {
-    return gradiente > 0 
-      ? { tendencia: "ALTA", forca } 
-      : { tendencia: "BAIXA", forca };
-  }
-  
-  return { tendencia: "NEUTRA", forca: 0 };
-}
-
-// =============================================
-// DETECÇÃO DE LATERALIDADE (CHOPP INDEX)
+// DETECÇÃO DE LATERALIDADE
 // =============================================
 function detectarLateralidade(closes, periodo = CONFIG.PERIODOS.ANALISE_LATERAL, limiar = CONFIG.LIMIARES.LATERALIDADE_LIMIAR) {
   const variacoes = [];
@@ -281,23 +283,24 @@ function detectarLateralidade(closes, periodo = CONFIG.PERIODOS.ANALISE_LATERAL,
 }
 
 // =============================================
-// CÁLCULO DINÂMICO DE SUPORTE/RESISTÊNCIA
+// SUPORTE/RESISTÊNCIA DINÂMICO
 // =============================================
-// ▲ PERÍODO REDUZIDO DE 50 PARA 20 VELAS
-function calcularZonasPreco(dados, periodo = 20) {
-  if (dados.length < periodo) periodo = dados.length;
-  const slice = dados.slice(-periodo);
-  const highs = slice.map(v => v.high);
-  const lows = slice.map(v => v.low);
+function calcularZonasPreco(volumeProfile, liquidez, ema200) {
   return {
-    resistencia: Math.max(...highs),
-    suporte: Math.min(...lows),
-    pivot: (Math.max(...highs) + Math.min(...lows) + dados[dados.length-1].close) / 3
+    resistencia: 
+      (volumeProfile.vaHigh * CONFIG.PESOS_SUPORTE_RESISTENCIA.VOLUME_PROFILE) +
+      (liquidez.resistencia * CONFIG.PESOS_SUPORTE_RESISTENCIA.LIQUIDEZ) +
+      (ema200 * CONFIG.PESOS_SUPORTE_RESISTENCIA.EMA),
+    
+    suporte: 
+      (volumeProfile.vaLow * CONFIG.PESOS_SUPORTE_RESISTENCIA.VOLUME_PROFILE) +
+      (liquidez.suporte * CONFIG.PESOS_SUPORTE_RESISTENCIA.LIQUIDEZ) +
+      (ema200 * CONFIG.PESOS_SUPORTE_RESISTENCIA.EMA)
   };
 }
 
 // =============================================
-// GERADOR DE SINAIS DE ALTA PRECISÃO PARA EURUSD
+// GERADOR DE SINAIS
 // =============================================
 function gerarSinal(indicadores, divergencias, lateral) {
   const {
@@ -312,24 +315,17 @@ function gerarSinal(indicadores, divergencias, lateral) {
     liquidez,
     tendencia,
     volume,
-    volumeMedia
+    volumeMedia,
+    ema200
   } = indicadores;
   
-  // ▲ VALIDAÇÃO DE VOLUME MÍNIMO
-  if (volume < (volumeMedia * 1.5)) {
-    return "ESPERAR";
-  }
+  // Validações iniciais - volume ajustado pela volatilidade
+  const minVolume = (state.atrGlobal < 0.0005) ? volumeMedia * 0.8 : volumeMedia * 1.5;
+  if (volume < minVolume) return "ESPERAR";
   
-  // Novo cálculo de suporte/resistência
-  const zonas = calcularZonasPreco(state.dadosHistoricos.M1);
-  state.suporteKey = zonas.suporte;
-  state.resistenciaKey = zonas.resistencia;
+  if (lateral) return "ESPERAR";
   
-  // Se estiver em lateralidade, forçar esperar
-  if (lateral) {
-    return "ESPERAR";
-  }
-
+  // Sinais baseados em tendência forte
   if (tendencia.tendencia === "FORTE_ALTA") {
     const condicoesCompra = [
       close > emaCurta,
@@ -337,10 +333,7 @@ function gerarSinal(indicadores, divergencias, lateral) {
       stoch.k > 60,
       close > superTrend.valor && superTrend.direcao > 0
     ];
-    
-    if (condicoesCompra.filter(Boolean).length >= 3) {
-      return "CALL";
-    }
+    if (condicoesCompra.filter(Boolean).length >= 3) return "CALL";
   }
   
   if (tendencia.tendencia === "FORTE_BAIXA") {
@@ -350,46 +343,32 @@ function gerarSinal(indicadores, divergencias, lateral) {
       stoch.k < 40,
       close < superTrend.valor && superTrend.direcao < 0
     ];
-    
-    if (condicoesVenda.filter(Boolean).length >= 3) {
-      return "PUT";
-    }
+    if (condicoesVenda.filter(Boolean).length >= 3) return "PUT";
   }
   
-  // ▲ LIMITE FIXO DE BREAKOUT (2 PIPS)
+  // Breakout de suporte/resistência
   const limiteBreakout = 0.0002;
+  if (close > (state.resistenciaKey + limiteBreakout)) return "CALL";
+  if (close < (state.suporteKey - limiteBreakout)) return "PUT";
   
-  if (close > (state.resistenciaKey + limiteBreakout)) {
-    return "CALL";
-  }
-  
-  if (close < (state.suporteKey - limiteBreakout)) {
-    return "PUT";
-  }
-  
+  // Divergências relevantes
   if (divergencias.divergenciaRSI) {
-    if (divergencias.tipoDivergencia === "ALTA" && close > state.suporteKey) {
-      return "CALL";
-    }
-    
-    if (divergencias.tipoDivergencia === "BAIXA" && close < state.resistenciaKey) {
-      return "PUT";
+    const relevante = Math.abs(divergencias.ultimoPreco - divergencias.penultimoPreco) > (state.atrGlobal * 0.5);
+    if (relevante) {
+      if (divergencias.tipoDivergencia === "ALTA" && close > state.suporteKey) return "CALL";
+      if (divergencias.tipoDivergencia === "BAIXA" && close < state.resistenciaKey) return "PUT";
     }
   }
   
-  if (rsi < 25 && close > emaMedia) {
-    return "CALL";
-  }
-  
-  if (rsi > 75 && close < emaMedia) {
-    return "PUT";
-  }
+  // Sinais de reversão
+  if (rsi < 25 && close > emaMedia) return "CALL";
+  if (rsi > 75 && close < emaMedia) return "PUT";
   
   return "ESPERAR";
 }
 
 // =============================================
-// CALCULADOR DE CONFIANÇA PRECISO (OTIMIZADO)
+// CALCULADOR DE CONFIANÇA
 // =============================================
 function calcularScore(sinal, indicadores, divergencias) {
   let score = 65;
@@ -405,7 +384,6 @@ function calcularScore(sinal, indicadores, divergencias) {
   };
   
   score += Object.values(fatores).reduce((sum, val) => sum + val, 0);
-  
   return Math.min(100, Math.max(0, score));
 }
 
@@ -423,7 +401,8 @@ function atualizarRelogio() {
     state.ultimaAtualizacao = now.toLocaleTimeString("pt-BR", {
       hour: '2-digit',
       minute: '2-digit',
-      second: '2-digit'
+      second: '2-digit',
+      hour12: false
     });
     elementoHora.textContent = state.ultimaAtualizacao;
     state.marketOpen = true;
@@ -431,7 +410,7 @@ function atualizarRelogio() {
 }
 
 function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
-  if (!state.marketOpen) return;
+  if (!document.getElementById("comando")) return;
   
   const comandoElement = document.getElementById("comando");
   if (comandoElement) {
@@ -441,6 +420,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
     if (sinal === "CALL") comandoElement.textContent += " 📈";
     else if (sinal === "PUT") comandoElement.textContent += " 📉";
     else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
+    else if (sinal === "ERRO") comandoElement.textContent = "ERRO";
   }
   
   const scoreElement = document.getElementById("score");
@@ -460,7 +440,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
 }
 
 // =============================================
-// INDICADORES TÉCNICOS (AJUSTADOS PARA FOREX)
+// INDICADORES TÉCNICOS (OTIMIZADOS)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -469,24 +449,47 @@ const calcularMedia = {
     return slice.reduce((a, b) => a + b, 0) / periodo;
   },
 
-  exponencial: (dados, periodo) => {
-    if (!Array.isArray(dados) || dados.length < periodo) return [];
+  exponencial: (dados, periodo, timeframe = 'M1') => {
+    if (!Array.isArray(dados) || dados.length < periodo) return 0;
     
-    const k = 2 / (periodo + 1);
-    let ema = calcularMedia.simples(dados.slice(0, periodo), periodo);
-    const emaArray = [ema];
+    const cacheKey = `${timeframe}_EMA${periodo}`;
     
-    for (let i = periodo; i < dados.length; i++) {
-      ema = dados[i] * k + ema * (1 - k);
-      emaArray.push(ema);
+    // Verificar continuidade usando índice
+    if (state.emaCache[cacheKey] && state.emaCache[cacheKey].ultimoIndice === dados.length - 2) {
+      // Atualização incremental
+      const k = 2 / (periodo + 1);
+      const ultimoEMA = state.emaCache[cacheKey].valor;
+      const novoValor = dados[dados.length - 1];
+      const novoEMA = novoValor * k + ultimoEMA * (1 - k);
+      
+      state.emaCache[cacheKey].valor = novoEMA;
+      state.emaCache[cacheKey].ultimoIndice = dados.length - 1;
+      return novoEMA;
+    } else {
+      // Cálculo completo
+      const k = 2 / (periodo + 1);
+      let ema = calcularMedia.simples(dados.slice(0, periodo), periodo) || dados[0];
+      
+      for (let i = periodo; i < dados.length; i++) {
+        ema = dados[i] * k + ema * (1 - k);
+      }
+      
+      state.emaCache[cacheKey] = {
+        valor: ema,
+        ultimoIndice: dados.length - 1
+      };
+      return ema;
     }
-    
-    return emaArray;
   }
 };
 
 function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   if (closes.length < periodo + 1) return 50;
+  
+  // Verificar continuidade dos dados
+  if (state.rsiCache.ultimoIndice !== closes.length - 2) {
+    state.rsiCache.initialized = false;
+  }
   
   if (!state.rsiCache.initialized) {
     let gains = 0, losses = 0;
@@ -499,8 +502,14 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
     state.rsiCache.avgGain = gains / periodo;
     state.rsiCache.avgLoss = losses / periodo;
     state.rsiCache.initialized = true;
+    state.rsiCache.ultimoIndice = closes.length - 1;
     
-    const rs = state.rsiCache.avgLoss === 0 ? Infinity : state.rsiCache.avgGain / state.rsiCache.avgLoss;
+    // Tratar divisão por zero
+    if (Math.abs(state.rsiCache.avgLoss) < 0.0000001) {
+      return state.rsiCache.avgGain > 0 ? 100 : 50;
+    }
+    
+    const rs = state.rsiCache.avgGain / state.rsiCache.avgLoss;
     return 100 - (100 / (1 + rs));
   }
   
@@ -514,7 +523,14 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
     state.rsiCache.avgLoss = ((state.rsiCache.avgLoss * (periodo - 1)) - diff) / periodo;
   }
   
-  const rs = state.rsiCache.avgLoss === 0 ? Infinity : state.rsiCache.avgGain / state.rsiCache.avgLoss;
+  state.rsiCache.ultimoIndice = closes.length - 1;
+  
+  // Tratar divisão por zero
+  if (Math.abs(state.rsiCache.avgLoss) < 0.0000001) {
+    return state.rsiCache.avgGain > 0 ? 100 : 50;
+  }
+  
+  const rs = state.rsiCache.avgGain / state.rsiCache.avgLoss;
   return 100 - (100 / (1 + rs));
 }
 
@@ -524,37 +540,35 @@ function calcularStochastic(highs, lows, closes,
   try {
     if (closes.length < periodoK) return { k: 50, d: 50 };
     
-    const kValues = [];
+    // Pré-alocar arrays para performance
+    const kValues = new Array(closes.length - periodoK + 1);
+    
     for (let i = periodoK - 1; i < closes.length; i++) {
       const startIndex = Math.max(0, i - periodoK + 1);
+      if (startIndex < 0) continue; // Proteção contra índices negativos
+      
       const sliceHigh = highs.slice(startIndex, i + 1);
       const sliceLow = lows.slice(startIndex, i + 1);
-      
-      if (sliceHigh.length === 0 || sliceLow.length === 0) {
-        kValues.push(50);
-        continue;
-      }
       
       const highestHigh = Math.max(...sliceHigh);
       const lowestLow = Math.min(...sliceLow);
       const range = highestHigh - lowestLow;
       const k = range !== 0 ? ((closes[i] - lowestLow) / range) * 100 : 50;
-      kValues.push(k);
+      kValues[i - periodoK + 1] = k;
     }
     
-    const kSuavizado = [];
+    const kSuavizado = new Array(kValues.length - periodoD + 1);
     for (let i = periodoD - 1; i < kValues.length; i++) {
       const startIndex = Math.max(0, i - periodoD + 1);
       const slice = kValues.slice(startIndex, i + 1);
-      const mediaK = calcularMedia.simples(slice, periodoD) || 50;
-      kSuavizado.push(mediaK);
+      kSuavizado[i - periodoD + 1] = calcularMedia.simples(slice, periodoD) || 50;
     }
     
-    const dValues = [];
+    const dValues = new Array(kSuavizado.length - periodoD + 1);
     for (let i = periodoD - 1; i < kSuavizado.length; i++) {
       const startIndex = Math.max(0, i - periodoD + 1);
       const slice = kSuavizado.slice(startIndex, i + 1);
-      dValues.push(calcularMedia.simples(slice, periodoD) || 50);
+      dValues[i - periodoD + 1] = calcularMedia.simples(slice, periodoD) || 50;
     }
     
     return {
@@ -573,8 +587,15 @@ function calcularWilliams(highs, lows, closes, periodo = CONFIG.PERIODOS.WILLIAM
     
     const sliceHigh = highs.slice(-periodo);
     const sliceLow = lows.slice(-periodo);
-    const highestHigh = Math.max(...sliceHigh);
-    const lowestLow = Math.min(...sliceLow);
+    
+    // Substituir Math.max/Math.min por loops otimizados
+    let highestHigh = -Infinity;
+    let lowestLow = Infinity;
+    for (let i = 0; i < sliceHigh.length; i++) {
+      if (sliceHigh[i] > highestHigh) highestHigh = sliceHigh[i];
+      if (sliceLow[i] < lowestLow) lowestLow = sliceLow[i];
+    }
+    
     const range = highestHigh - lowestLow;
     
     return range > 0 ? ((highestHigh - closes[closes.length - 1]) / range) * -100 : 0;
@@ -584,67 +605,51 @@ function calcularWilliams(highs, lows, closes, periodo = CONFIG.PERIODOS.WILLIAM
   }
 }
 
-function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA, 
-                    lenta = CONFIG.PERIODOS.MACD_LENTA, 
-                    sinal = CONFIG.PERIODOS.MACD_SINAL) {
-  try {
-    if (state.macdCache.emaRapida === null || state.macdCache.emaLenta === null) {
-      const emaRapida = calcularMedia.exponencial(closes, rapida);
-      const emaLenta = calcularMedia.exponencial(closes, lenta);
-      
-      const startIdx = Math.max(0, lenta - rapida);
-      const macdLinha = emaRapida.slice(startIdx).map((val, idx) => val - emaLenta[idx]);
-      const sinalLinha = calcularMedia.exponencial(macdLinha, sinal);
-      
-      const ultimoMACD = macdLinha[macdLinha.length - 1] || 0;
-      const ultimoSinal = sinalLinha[sinalLinha.length - 1] || 0;
-      
-      state.macdCache = {
-        emaRapida: emaRapida[emaRapida.length - 1],
-        emaLenta: emaLenta[emaLenta.length - 1],
-        macdLine: macdLinha,
-        signalLine: sinalLinha
-      };
-      
-      return {
-        histograma: ultimoMACD - ultimoSinal,
-        macdLinha: ultimoMACD,
-        sinalLinha: ultimoSinal
-      };
-    }
-    
-    const kRapida = 2 / (rapida + 1);
-    const kLenta = 2 / (lenta + 1);
-    const kSinal = 2 / (sinal + 1);
-    
-    const novoValor = closes[closes.length - 1];
-    
-    state.macdCache.emaRapida = novoValor * kRapida + state.macdCache.emaRapida * (1 - kRapida);
-    state.macdCache.emaLenta = novoValor * kLenta + state.macdCache.emaLenta * (1 - kLenta);
-    
-    const novaMacdLinha = state.macdCache.emaRapida - state.macdCache.emaLenta;
-    state.macdCache.macdLine.push(novaMacdLinha);
-    
-    if (state.macdCache.signalLine.length === 0) {
-      state.macdCache.signalLine.push(novaMacdLinha);
-    } else {
-      const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
-      const novoSignal = novaMacdLinha * kSinal + ultimoSinal * (1 - kSinal);
-      state.macdCache.signalLine.push(novoSignal);
-    }
-    
-    const ultimoMACD = novaMacdLinha;
-    const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
-    
-    return {
-      histograma: ultimoMACD - ultimoSinal,
-      macdLinha: ultimoMACD,
-      sinalLinha: ultimoSinal
+// =============================================
+// MACD CORRIGIDO (CÁLCULO INCREMENTAL)
+// =============================================
+function calcularMACD(closes, rapida = 6, lenta = 13, sinal = 9) {
+  // Inicializar cache se necessário
+  if (!state.macdCache.initialized) {
+    state.macdCache = {
+      emaRapida: calcularMedia.exponencial(closes, rapida, 'M1'),
+      emaLenta: calcularMedia.exponencial(closes, lenta, 'M1'),
+      macdLine: [],
+      signalLine: [],
+      originalLength: closes.length,
+      initialized: true
     };
-  } catch (e) {
-    console.error("Erro no cálculo MACD:", e);
-    return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
   }
+
+  // Atualizar apenas o último ponto
+  const ultimoClose = closes[closes.length - 1];
+  
+  // Atualizar EMAs incrementalmente
+  const kRapida = 2 / (rapida + 1);
+  state.macdCache.emaRapida = ultimoClose * kRapida + state.macdCache.emaRapida * (1 - kRapida);
+  
+  const kLenta = 2 / (lenta + 1);
+  state.macdCache.emaLenta = ultimoClose * kLenta + state.macdCache.emaLenta * (1 - kLenta);
+  
+  // Calcular linha MACD
+  const macdAtual = state.macdCache.emaRapida - state.macdCache.emaLenta;
+  state.macdCache.macdLine.push(macdAtual);
+  
+  // Calcular linha de sinal (EMA do MACD)
+  if (state.macdCache.signalLine.length === 0) {
+    state.macdCache.signalLine = [macdAtual];
+  } else {
+    const kSinal = 2 / (sinal + 1);
+    const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
+    const novoSignal = macdAtual * kSinal + ultimoSinal * (1 - kSinal);
+    state.macdCache.signalLine.push(novoSignal);
+  }
+
+  return {
+    histograma: state.macdCache.macdLine.slice(-1)[0] - state.macdCache.signalLine.slice(-1)[0],
+    macdLinha: state.macdCache.macdLine.slice(-1)[0],
+    signalLine: state.macdCache.signalLine.slice(-1)[0]
+  };
 }
 
 function calcularVWAP(dados, periodo = CONFIG.PERIODOS.VWAP) {
@@ -693,39 +698,75 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
   try {
     if (dados.length < periodo) return { direcao: 0, valor: 0 };
     
-    if (state.atrGlobal === 0) {
-      state.atrGlobal = calcularATR(dados, periodo);
-    }
-    
-    const current = dados[dados.length - 1];
-    const hl2 = (current.high + current.low) / 2;
-    const atr = state.atrGlobal;
-    
-    const upperBand = hl2 + (multiplicador * atr);
-    const lowerBand = hl2 - (multiplicador * atr);
-    
-    let superTrend;
-    let direcao;
-    
-    if (state.superTrendCache.length === 0) {
-      superTrend = upperBand;
-      direcao = 1;
-    } else {
+    // Verificar se o cache é válido
+    if (state.superTrendCache.ultimoIndice === dados.length - 2) {
+      const atr = calcularATR(dados.slice(-periodo-1), periodo);
+      const current = dados[dados.length - 1];
+      const hl2 = (current.high + current.low) / 2;
+      const upperBand = hl2 + (multiplicador * atr);
+      const lowerBand = hl2 - (multiplicador * atr);
+      const prevSuperTrend = state.superTrendCache.valor;
       const prev = dados[dados.length - 2];
-      const prevSuperTrend = state.superTrendCache[state.superTrendCache.length - 1];
       
-      if (prev.close > prevSuperTrend.valor) {
+      let superTrend, direcao;
+      if (prev.close > prevSuperTrend) {
         direcao = 1;
-        superTrend = Math.max(lowerBand, prevSuperTrend.valor);
+        superTrend = Math.max(lowerBand, prevSuperTrend);
       } else {
         direcao = -1;
-        superTrend = Math.min(upperBand, prevSuperTrend.valor);
+        superTrend = Math.min(upperBand, prevSuperTrend);
       }
+      
+      // Atualizar cache
+      state.superTrendCache = {
+        valor: superTrend,
+        direcao,
+        ultimoIndice: dados.length - 1
+      };
+      return { direcao, valor: superTrend };
+    } 
+    // Cálculo completo se cache inválido
+    else {
+      const atr = calcularATR(dados.slice(0, periodo), periodo);
+      let superTrend = 0;
+      let direcao = 1;
+      const superTrends = [];
+      
+      for (let i = periodo; i < dados.length; i++) {
+        const current = dados[i];
+        const hl2 = (current.high + current.low) / 2;
+        const upperBand = hl2 + (multiplicador * atr);
+        const lowerBand = hl2 - (multiplicador * atr);
+        
+        if (i === periodo) {
+          superTrend = upperBand;
+          direcao = 1;
+        } else {
+          const prev = dados[i-1];
+          const prevSuperTrend = superTrends[superTrends.length - 1];
+          
+          if (prev.close > prevSuperTrend) {
+            direcao = 1;
+            superTrend = Math.max(lowerBand, prevSuperTrend);
+          } else {
+            direcao = -1;
+            superTrend = Math.min(upperBand, prevSuperTrend);
+          }
+        }
+        superTrends.push(superTrend);
+      }
+      
+      const ultimoValor = superTrends[superTrends.length - 1];
+      const ultimaDirecao = direcao;
+      
+      // Atualizar cache
+      state.superTrendCache = {
+        valor: ultimoValor,
+        direcao: ultimaDirecao,
+        ultimoIndice: dados.length - 1
+      };
+      return { direcao: ultimaDirecao, valor: ultimoValor };
     }
-    
-    state.superTrendCache.push({ direcao, valor: superTrend });
-    return { direcao, valor: superTrend };
-    
   } catch (e) {
     console.error("Erro no cálculo SuperTrend:", e);
     return { direcao: 0, valor: 0 };
@@ -737,46 +778,60 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
     if (!Array.isArray(dados) || dados.length < periodo) return { pvp: 0, vaHigh: 0, vaLow: 0 };
     
     const slice = dados.slice(-periodo);
-    const buckets = {};
     const bucketSize = CONFIG.LIMIARES.BUCKET_SIZE;
     
-    const minPrice = Math.min(...slice.map(v => v.low));
-    const maxPrice = Math.max(...slice.map(v => v.high));
-    
-    for (let price = minPrice; price <= maxPrice; price += bucketSize) {
-      const bucketKey = price.toFixed(5);
-      buckets[bucketKey] = 0;
+    // Substituir Math.min/Math.max por loops otimizados
+    let minPrice = Infinity;
+    let maxPrice = -Infinity;
+    for (const vela of slice) {
+      if (vela.low < minPrice) minPrice = vela.low;
+      if (vela.high > maxPrice) maxPrice = vela.high;
     }
     
+    // Usar Map para melhor performance
+    const buckets = new Map();
+    
+    // Inicializar buckets para toda a faixa de preços
+    for (let price = minPrice; price <= maxPrice; price += bucketSize) {
+      const bucketKey = price.toFixed(5);
+      buckets.set(bucketKey, 0);
+    }
+    
+    // Preencher buckets otimizado
     for (const vela of slice) {
       const amplitude = vela.high - vela.low;
       if (amplitude === 0) continue;
       
-      const priceRange = [];
-      for (let p = vela.low; p <= vela.high; p += bucketSize) {
-        priceRange.push(p.toFixed(5));
-      }
+      const numBuckets = Math.ceil(amplitude / bucketSize);
+      const volumePorBucket = vela.volume / numBuckets;
       
-      const volumePorBucket = vela.volume / priceRange.length;
-      for (const bucket of priceRange) {
-        if (buckets[bucket] !== undefined) {
-          buckets[bucket] += volumePorBucket;
+      for (let b = 0; b < numBuckets; b++) {
+        const priceLevel = parseFloat((vela.low + b * bucketSize).toFixed(5));
+        const bucketKey = priceLevel.toFixed(5);
+        
+        // Criar bucket se não existir
+        if (!buckets.has(bucketKey)) {
+          buckets.set(bucketKey, 0);
         }
+        buckets.set(bucketKey, buckets.get(bucketKey) + volumePorBucket);
       }
     }
     
-    const niveisOrdenados = Object.entries(buckets)
-      .sort((a, b) => b[1] - a[1]);
+    // Converter para array e ordenar
+    const bucketsArray = Array.from(buckets.entries());
+    const niveisOrdenados = bucketsArray.sort((a, b) => b[1] - a[1]);
     
     if (niveisOrdenados.length === 0) return { pvp: 0, vaHigh: 0, vaLow: 0 };
     
     const pvp = parseFloat(niveisOrdenados[0][0]);
     
-    const volumeTotal = Object.values(buckets).reduce((sum, vol) => sum + vol, 0);
+    const volumeTotal = bucketsArray.reduce((sum, [, vol]) => sum + vol, 0);
     const volumeAlvo = volumeTotal * 0.7;
     
     let volumeAcumulado = 0;
-    const bucketsOrdenados = [...niveisOrdenados].sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
+    const bucketsOrdenados = [...bucketsArray].sort((a, b) => 
+      parseFloat(a[0]) - parseFloat(b[0])
+    );
     
     let vaLow = pvp;
     for (let i = 0; i < bucketsOrdenados.length; i++) {
@@ -806,10 +861,16 @@ function calcularLiquidez(velas, periodo = CONFIG.PERIODOS.LIQUIDITY_ZONES) {
   const lowNodes = [];
   
   for (let i = 3; i < slice.length - 3; i++) {
-    if (slice[i].high > slice[i-1].high && slice[i].high > slice[i+1].high) {
+    if (slice[i].high > slice[i-1].high && 
+        slice[i].high > slice[i+1].high &&
+        slice[i].high > slice[i-2].high &&
+        slice[i].high > slice[i+2].high) {
       highNodes.push(slice[i].high);
     }
-    if (slice[i].low < slice[i-1].low && slice[i].low < slice[i+1].low) {
+    if (slice[i].low < slice[i-1].low && 
+        slice[i].low < slice[i+1].low &&
+        slice[i].low < slice[i-2].low &&
+        slice[i].low < slice[i+2].low) {
       lowNodes.push(slice[i].low);
     }
   }
@@ -826,11 +887,19 @@ function detectarDivergencias(closes, rsis, highs, lows) {
     const extremeLookback = CONFIG.PERIODOS.EXTREME_LOOKBACK;
     
     if (closes.length < lookback || rsis.length < lookback) {
-      return { divergenciaRSI: false, tipoDivergencia: "NENHUMA", divergenciaOculta: false };
+      return { 
+        divergenciaRSI: false, 
+        tipoDivergencia: "NENHUMA", 
+        divergenciaOculta: false,
+        ultimoPreco: 0,
+        penultimoPreco: 0
+      };
     }
     
     const findExtremes = (data, isHigh = true) => {
       const extremes = [];
+      if (data.length < extremeLookback * 2 + 1) return extremes;
+      
       for (let i = extremeLookback; i < data.length - extremeLookback; i++) {
         let isExtreme = true;
         
@@ -862,55 +931,55 @@ function detectarDivergencias(closes, rsis, highs, lows) {
     
     let divergenciaRegularAlta = false;
     let divergenciaRegularBaixa = false;
-    
-    if (priceHighs.length >= 2 && rsiHighs.length >= 2) {
-      const lastPriceHigh = priceHighs[priceHighs.length - 1];
-      const prevPriceHigh = priceHighs[priceHighs.length - 2];
-      const lastRsiHigh = rsiHighs[rsiHighs.length - 1];
-      const prevRsiHigh = rsiHighs[rsiHighs.length - 2];
-      
-      if (lastPriceHigh.value > prevPriceHigh.value && 
-          lastRsiHigh.value < prevRsiHigh.value) {
-        divergenciaRegularBaixa = true;
-      }
-    }
-    
-    if (priceLows.length >= 2 && rsiLows.length >= 2) {
-      const lastPriceLow = priceLows[priceLows.length - 1];
-      const prevPriceLow = priceLows[priceLows.length - 2];
-      const lastRsiLow = rsiLows[rsiLows.length - 1];
-      const prevRsiLow = rsiLows[rsiLows.length - 2];
-      
-      if (lastPriceLow.value < prevPriceLow.value && 
-          lastRsiLow.value > prevRsiLow.value) {
-        divergenciaRegularAlta = true;
-      }
-    }
-    
     let divergenciaOcultaAlta = false;
     let divergenciaOcultaBaixa = false;
     
+    // Armazenar últimos preços para análise de relevância
+    const ultimoPreco = closes[closes.length - 1];
+    const penultimoPreco = closes.length > 1 ? closes[closes.length - 2] : 0;
+
     if (priceHighs.length >= 2 && rsiHighs.length >= 2) {
       const lastPriceHigh = priceHighs[priceHighs.length - 1];
       const prevPriceHigh = priceHighs[priceHighs.length - 2];
-      const lastRsiHigh = rsiHighs[rsiHighs.length - 1];
-      const prevRsiHigh = rsiHighs[rsiHighs.length - 2];
       
-      if (lastPriceHigh.value < prevPriceHigh.value && 
-          lastRsiHigh.value > prevRsiHigh.value) {
-        divergenciaOcultaBaixa = true;
+      // Filtro de relevância
+      const diferencaPreco = Math.abs(lastPriceHigh.value - prevPriceHigh.value);
+      const relevante = diferencaPreco > (state.atrGlobal * 0.5);
+      
+      if (relevante) {
+        const lastRsiHigh = rsiHighs[rsiHighs.length - 1];
+        const prevRsiHigh = rsiHighs[rsiHighs.length - 2];
+        
+        if (lastPriceHigh.value > prevPriceHigh.value && 
+            lastRsiHigh.value < prevRsiHigh.value) {
+          divergenciaRegularBaixa = true;
+        }
+        if (lastPriceHigh.value < prevPriceHigh.value && 
+            lastRsiHigh.value > prevRsiHigh.value) {
+          divergenciaOcultaBaixa = true;
+        }
       }
     }
     
     if (priceLows.length >= 2 && rsiLows.length >= 2) {
       const lastPriceLow = priceLows[priceLows.length - 1];
       const prevPriceLow = priceLows[priceLows.length - 2];
-      const lastRsiLow = rsiLows[rsiLows.length - 1];
-      const prevRsiLow = rsiLows[rsiLows.length - 2];
       
-      if (lastPriceLow.value > prevPriceLow.value && 
-          lastRsiLow.value < prevRsiLow.value) {
-        divergenciaOcultaAlta = true;
+      const diferencaPreco = Math.abs(lastPriceLow.value - prevPriceLow.value);
+      const relevante = diferencaPreco > (state.atrGlobal * 0.5);
+      
+      if (relevante) {
+        const lastRsiLow = rsiLows[rsiLows.length - 1];
+        const prevRsiLow = rsiLows[rsiLows.length - 2];
+        
+        if (lastPriceLow.value < prevPriceLow.value && 
+            lastRsiLow.value > prevRsiLow.value) {
+          divergenciaRegularAlta = true;
+        }
+        if (lastPriceLow.value > prevPriceLow.value && 
+            lastRsiLow.value < prevRsiLow.value) {
+          divergenciaOcultaAlta = true;
+        }
       }
     }
     
@@ -920,33 +989,61 @@ function detectarDivergencias(closes, rsis, highs, lows) {
       tipoDivergencia: divergenciaRegularAlta ? "ALTA" : 
                       divergenciaRegularBaixa ? "BAIXA" : 
                       divergenciaOcultaAlta ? "OCULTA_ALTA" : 
-                      divergenciaOcultaBaixa ? "OCULTA_BAIXA" : "NENHUMA"
+                      divergenciaOcultaBaixa ? "OCULTA_BAIXA" : "NENHUMA",
+      ultimoPreco,
+      penultimoPreco
     };
   } catch (e) {
     console.error("Erro na detecção de divergências:", e);
-    return { divergenciaRSI: false, divergenciaOculta: false, tipoDivergencia: "NENHUMA" };
+    return { 
+      divergenciaRSI: false, 
+      divergenciaOculta: false, 
+      tipoDivergencia: "NENHUMA",
+      ultimoPreco: 0,
+      penultimoPreco: 0
+    };
   }
 }
 
 // =============================================
-// CORE DO SISTEMA (ATUALIZADO PARA MULTI-TIMEFRAME)
+// CORE DO SISTEMA (ATUALIZADO)
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento || !state.marketOpen) return;
   state.leituraEmAndamento = true;
   
   try {
-    // Obter dados dos três timeframes
+    // Obter dados multi-timeframe
     const dadosPorTF = await obterDadosMultiTimeframe();
-    state.dadosHistoricos.M1 = dadosPorTF.M1 || [];
-    state.dadosHistoricos.M5 = dadosPorTF.M5 || [];
-    state.dadosHistoricos.M15 = dadosPorTF.M15 || [];
+    state.dadosHistoricos.M1 = dadosPorTF.M1 || state.dadosHistoricos.M1;
+    state.dadosHistoricos.M5 = dadosPorTF.M5 || state.dadosHistoricos.M5;
+    state.dadosHistoricos.M15 = dadosPorTF.M15 || state.dadosHistoricos.M15;
     
-    // Calcular tendências em cada timeframe
+    // Limitar histórico para evitar crescimento excessivo
+    state.dadosHistoricos.M1 = state.dadosHistoricos.M1.slice(-500);
+    state.dadosHistoricos.M5 = state.dadosHistoricos.M5.slice(-300);
+    state.dadosHistoricos.M15 = state.dadosHistoricos.M15.slice(-200);
+    
+    // Calcular ATR para cada timeframe
+    const atrM1 = calcularATR(state.dadosHistoricos.M1);
+    const atrM5 = calcularATR(state.dadosHistoricos.M5);
+    const atrM15 = calcularATR(state.dadosHistoricos.M15);
+    state.atrGlobal = atrM1; // Usar M1 como referência principal
+
+    // Calcular tendências
     const tendencias = {
-      M1: calcularTendenciaTimeframe(state.dadosHistoricos.M1.map(v => v.close)),
-      M5: calcularTendenciaTimeframe(state.dadosHistoricos.M5.map(v => v.close)),
-      M15: calcularTendenciaTimeframe(state.dadosHistoricos.M15.map(v => v.close))
+      M1: {
+        ...calcularTendenciaTimeframe(state.dadosHistoricos.M1.map(v => v.close), 'M1'),
+        atr: atrM1
+      },
+      M5: {
+        ...calcularTendenciaTimeframe(state.dadosHistoricos.M5.map(v => v.close), 'M5'),
+        atr: atrM5
+      },
+      M15: {
+        ...calcularTendenciaTimeframe(state.dadosHistoricos.M15.map(v => v.close), 'M15'),
+        atr: atrM15
+      }
     };
     
     // Consolidar tendências
@@ -954,7 +1051,7 @@ async function analisarMercado() {
     state.tendenciaDetectada = tendenciaGeral.tendencia;
     state.forcaTendencia = tendenciaGeral.forca;
 
-    // Análise técnica principal usando M1
+    // Análise técnica principal (M1)
     const dadosM1 = state.dadosHistoricos.M1;
     if (dadosM1.length < 50) {
       throw new Error(`Dados insuficientes (${dadosM1.length} velas). Aguardando mais dados...`);
@@ -966,28 +1063,32 @@ async function analisarMercado() {
     const lows = dadosM1.map(v => v.low);
     const volumes = dadosM1.map(v => v.volume);
 
-    const calcularEMA = (dados, periodo) => {
-      if (dados.length < periodo) return 0;
-      const emaArray = calcularMedia.exponencial(dados, periodo);
-      return emaArray[emaArray.length - 1];
-    };
-
-    const ema5 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
-    const ema13 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
-    const ema200 = calcularEMA(closes, CONFIG.PERIODOS.EMA_LONGA);
+    const ema5 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA, 'M1');
+    const ema13 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA, 'M1');
+    const ema200 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_LONGA, 'M1');
 
     const volumeMedia = calcularMedia.simples(volumes.slice(-CONFIG.PERIODOS.SMA_VOLUME), CONFIG.PERIODOS.SMA_VOLUME) || 1;
     const superTrend = calcularSuperTrend(dadosM1);
     const volumeProfile = calcularVolumeProfile(dadosM1);
     const liquidez = calcularLiquidez(dadosM1);
     
+    // CALCULAR ZONAS DE PREÇO ANTES DE GERAR SINAL
+    const zonas = calcularZonasPreco(volumeProfile, liquidez, ema200);
+    state.suporteKey = zonas.suporte;
+    state.resistenciaKey = zonas.resistencia;
+    
     const rsi = calcularRSI(closes);
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
+    const williams = calcularWilliams(highs, lows, closes);
     
+    // Atualizar RSI History corretamente
     if (state.rsiHistory.length < closes.length) {
-      for (let i = state.rsiHistory.length; i < closes.length; i++) {
-        state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
+      const startIdx = Math.max(0, state.rsiHistory.length - 1);
+      for (let i = startIdx; i < closes.length; i++) {
+        state.rsiHistory.push(
+          calcularRSI(closes.slice(0, i + 1), CONFIG.PERIODOS.RSI
+        );
       }
     }
     
@@ -998,8 +1099,10 @@ async function analisarMercado() {
       rsi,
       stoch,
       macd,
+      williams,
       emaCurta: ema5,
       emaMedia: ema13,
+      ema200,
       close: velaAtual.close,
       volume: velaAtual.volume,
       volumeMedia,
@@ -1011,15 +1114,14 @@ async function analisarMercado() {
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
-    // ▲ VALIDAÇÃO DE VOLATILIDADE MÍNIMA
-    const atr = calcularATR(dadosM1);
-    if (atr < 0.0005) { // Mínimo 5 pips
+    // Validação de volatilidade mínima
+    if (state.atrGlobal < 0.0005) {
       sinal = "ESPERAR";
     }
     
-    // ▲ COOLDOWN REDUZIDO (66%)
+    // Cooldown
     if (sinal !== "ESPERAR" && state.cooldown <= 0) {
-      state.cooldown = 1; // De 3 para 1 minuto
+      state.cooldown = 1;
     } else if (state.cooldown > 0) {
       state.cooldown--;
       sinal = "ESPERAR";
@@ -1029,7 +1131,12 @@ async function analisarMercado() {
 
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
-    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
+    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR", {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
 
     atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
 
@@ -1067,7 +1174,9 @@ async function analisarMercado() {
       criteriosElement.innerHTML = `<li>ERRO: ${e.message}</li>`;
     }
     
-    if (++state.tentativasErro > 3) setTimeout(() => location.reload(), 10000);
+    if (++state.tentativasErro > 3) {
+      setTimeout(() => location.reload(), 30000); // Recarregar após 30 segundos
+    }
   } finally {
     state.leituraEmAndamento = false;
   }
@@ -1078,6 +1187,7 @@ async function analisarMercado() {
 // =============================================
 function sincronizarTimer() {
   clearInterval(state.intervaloAtual);
+  
   const agora = new Date();
   const segundos = agora.getSeconds();
   state.timer = 60 - segundos;
@@ -1089,6 +1199,8 @@ function sincronizarTimer() {
   }
   
   state.intervaloAtual = setInterval(() => {
+    if (state.leituraEmAndamento) return; // Pular se ocupado
+    
     state.timer--;
     
     if (elementoTimer) {
@@ -1106,12 +1218,23 @@ function sincronizarTimer() {
 // =============================================
 // INICIALIZAÇÃO
 // =============================================
+let tentativasInicio = 0;
+
 function iniciarAplicativo() {
+  tentativasInicio++;
+  
+  // Parar após 10 tentativas
+  if (tentativasInicio > 10) {
+    console.error("Elementos críticos não carregados");
+    return;
+  }
+  
+  // Verificar se elementos críticos existem
   const ids = ['comando','score','hora','timer','criterios','ultimos'];
   const falt = ids.filter(id => !document.getElementById(id));
   
   if (falt.length > 0) {
-    console.error("Elementos faltando:", falt);
+    setTimeout(iniciarAplicativo, 500); // Tentar novamente após 500ms
     return;
   }
   
@@ -1120,6 +1243,18 @@ function iniciarAplicativo() {
   
   setTimeout(analisarMercado, 2000);
   
+  // Verificação de saúde
+  setInterval(() => {
+    if (state.ultimos.length > 0) {
+      const ultimoRegistro = state.ultimos[0];
+      const tempoDesdeUltimo = new Date() - new Date(ultimoRegistro.split(" - ")[0]);
+      if (tempoDesdeUltimo > 120000) { // 2 minutos sem atualização
+        location.reload();
+      }
+    }
+  }, 60000);
+  
+  // Adicionar botão de backtest
   const backtestBtn = document.createElement('button');
   backtestBtn.textContent = 'Executar Backtest (5 dias)';
   backtestBtn.style.position = 'fixed';
