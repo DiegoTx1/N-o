@@ -21,8 +21,7 @@ const state = {
   rsiCache: { avgGain: 0, avgLoss: 0, initialized: false },
   emaCache: {
     ema5: null,
-    ema13: null,
-    ema200: null
+    ema13: null
   },
   macdCache: {
     emaRapida: null,
@@ -49,11 +48,9 @@ const CONFIG = {
     STOCH_D: 3,
     EMA_CURTA: 5,
     EMA_MEDIA: 13,
-    EMA_LONGA: 200,
     MACD_RAPIDA: 6,
     MACD_LENTA: 13,
     MACD_SINAL: 9,
-    VELAS_CONFIRMACAO: 3,
     ANALISE_LATERAL: 20,
     ATR: 14,
     SUPERTREND: 7,
@@ -445,12 +442,17 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
                     lenta = CONFIG.PERIODOS.MACD_LENTA, 
                     sinal = CONFIG.PERIODOS.MACD_SINAL) {
   try {
+    // Se não houver dados suficientes, retornar valores padrão
+    if (closes.length < lenta) {
+      return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+    }
+    
     // Resetar cache se necessário
-    if (state.macdCache.emaRapida === null || state.macdCache.emaLenta === null || state.macdCache.macdLine.length === 0) {
+    if (state.macdCache.emaRapida === null || state.macdCache.emaLenta === null) {
       const emaRapida = calcularMedia.exponencial(closes, rapida) || [];
       const emaLenta = calcularMedia.exponencial(closes, lenta) || [];
       
-      if (emaRapida === null || emaLenta === null || emaRapida.length === 0 || emaLenta.length === 0) {
+      if (!emaRapida || !emaLenta || emaRapida.length === 0 || emaLenta.length === 0) {
         return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
       }
       
@@ -576,75 +578,28 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
 function detectarDivergencias(closes, rsis, highs, lows) {
   try {
     const lookback = CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK;
-    const extremeLookback = CONFIG.PERIODOS.EXTREME_LOOKBACK;
     
     if (closes.length < lookback || rsis.length < lookback) {
       return { divergenciaRSI: false, tipoDivergencia: "NENHUMA" };
     }
     
-    const findExtremes = (data, isHigh = true) => {
-      const extremes = [];
-      for (let i = extremeLookback; i < data.length - extremeLookback; i++) {
-        let isExtreme = true;
-        
-        for (let j = 1; j <= extremeLookback; j++) {
-          if (isHigh) {
-            if (data[i] <= data[i-j] || data[i] <= data[i+j]) {
-              isExtreme = false;
-              break;
-            }
-          } else {
-            if (data[i] >= data[i-j] || data[i] >= data[i+j]) {
-              isExtreme = false;
-              break;
-            }
-          }
-        }
-        
-        if (isExtreme) {
-          extremes.push({ index: i, value: data[i] });
-        }
-      }
-      return extremes;
-    };
+    // Detecção simplificada de divergência
+    const lastClose = closes[closes.length - 1];
+    const prevClose = closes[closes.length - 2];
+    const lastRsi = rsis[rsis.length - 1];
+    const prevRsi = rsis[rsis.length - 2];
     
-    const priceHighs = findExtremes(highs, true);
-    const priceLows = findExtremes(lows, false);
-    const rsiHighs = findExtremes(rsis, true);
-    const rsiLows = findExtremes(rsis, false);
-    
-    let divergenciaRegularAlta = false;
-    let divergenciaRegularBaixa = false;
-    
-    if (priceHighs.length >= 2 && rsiHighs.length >= 2) {
-      const lastPriceHigh = priceHighs[priceHighs.length - 1];
-      const prevPriceHigh = priceHighs[priceHighs.length - 2];
-      const lastRsiHigh = rsiHighs[rsiHighs.length - 1];
-      const prevRsiHigh = rsiHighs[rsiHighs.length - 2];
-      
-      if (lastPriceHigh.value > prevPriceHigh.value && 
-          lastRsiHigh.value < prevRsiHigh.value) {
-        divergenciaRegularBaixa = true;
-      }
+    // Divergência de alta (preço faz fundo mais baixo, RSI faz fundo mais alto)
+    if (lastClose < prevClose && lastRsi > prevRsi && lastRsi < 40) {
+      return { divergenciaRSI: true, tipoDivergencia: "ALTA" };
     }
     
-    if (priceLows.length >= 2 && rsiLows.length >= 2) {
-      const lastPriceLow = priceLows[priceLows.length - 1];
-      const prevPriceLow = priceLows[priceLows.length - 2];
-      const lastRsiLow = rsiLows[rsiLows.length - 1];
-      const prevRsiLow = rsiLows[rsiLows.length - 2];
-      
-      if (lastPriceLow.value < prevPriceLow.value && 
-          lastRsiLow.value > prevRsiLow.value) {
-        divergenciaRegularAlta = true;
-      }
+    // Divergência de baixa (preço faz topo mais alto, RSI faz topo mais baixo)
+    if (lastClose > prevClose && lastRsi < prevRsi && lastRsi > 60) {
+      return { divergenciaRSI: true, tipoDivergencia: "BAIXA" };
     }
     
-    return {
-      divergenciaRSI: divergenciaRegularAlta || divergenciaRegularBaixa,
-      tipoDivergencia: divergenciaRegularAlta ? "ALTA" : 
-                      divergenciaRegularBaixa ? "BAIXA" : "NENHUMA"
-    };
+    return { divergenciaRSI: false, tipoDivergencia: "NENHUMA" };
   } catch (e) {
     console.error("Erro na detecção de divergências:", e);
     return { divergenciaRSI: false, tipoDivergencia: "NENHUMA" };
@@ -659,14 +614,16 @@ async function analisarMercado() {
   state.leituraEmAndamento = true;
   
   try {
+    console.log("Obtendo dados da API...");
     const dados = await obterDadosTwelveData();
     if (!dados || dados.length === 0) {
       throw new Error("Nenhum dado recebido da API");
     }
     
+    console.log(`Dados recebidos: ${dados.length} velas`);
     state.dadosHistoricos = dados;
     
-    if (dados.length < 50) {
+    if (dados.length < 20) {
       throw new Error(`Dados insuficientes (${dados.length} velas). Aguardando mais dados...`);
     }
     
@@ -675,45 +632,32 @@ async function analisarMercado() {
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
 
-    // Resetar caches antes de cada análise
-    state.rsiCache = { avgGain: 0, avgLoss: 0, initialized: false };
-    state.macdCache = { emaRapida: null, emaLenta: null, macdLine: [], signalLine: [] };
-    state.superTrendCache = [];
-    state.atrGlobal = 0;
-    state.rsiHistory = [];
-
-    // Calcular EMAs corretamente
-    const calcularEMA = (dados, periodo) => {
-      const emaArray = calcularMedia.exponencial(dados, periodo);
-      return emaArray && emaArray.length > 0 ? emaArray[emaArray.length - 1] : null;
-    };
-
-    const ema5 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
-    const ema13 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
+    // Calcular EMAs
+    const ema5 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA)?.pop() || closes[closes.length - 1];
+    const ema13 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA)?.pop() || closes[closes.length - 1];
     
-    if (ema5 === null || ema13 === null) {
-      throw new Error("Falha no cálculo das EMAs");
-    }
-
     const superTrend = calcularSuperTrend(dados);
-    
     const rsi = calcularRSI(closes);
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
     
     // Preencher histórico de RSI
-    for (let i = 14; i < closes.length; i++) {
-      state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
+    if (state.rsiHistory.length < closes.length) {
+      for (let i = 0; i < closes.length; i++) {
+        if (i >= CONFIG.PERIODOS.RSI) {
+          state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
+        } else {
+          state.rsiHistory.push(50);
+        }
+      }
     }
     
     const divergencias = detectarDivergencias(closes, state.rsiHistory, highs, lows);
-
     const tendencia = avaliarTendencia(ema5, ema13);
-    
+    const lateral = detectarLateralidade(closes);
+
     state.tendenciaDetectada = tendencia.tendencia;
     state.forcaTendencia = tendencia.forca;
-
-    const lateral = detectarLateralidade(closes);
 
     const indicadores = {
       rsi,
@@ -750,14 +694,13 @@ async function analisarMercado() {
         <li>📊 Tendência: ${state.tendenciaDetectada} (${state.forcaTendencia}%)</li>
         <li>💰 Preço: ${indicadores.close.toFixed(5)}</li>
         <li>📉 RSI: ${rsi.toFixed(2)} ${rsi < 30 ? '🔻' : rsi > 70 ? '🔺' : ''}</li>
-        <li>📊 MACD: ${macd.histograma.toFixed(6)} ${macd.histograma > 0 ? '🟢' : '🔴'}</li>
+        <li>📊 MACD: ${macd.histograma > 0 ? '+' : ''}${macd.histograma.toFixed(6)} ${macd.histograma > 0 ? '🟢' : '🔴'}</li>
         <li>📈 Stochastic: ${stoch.k.toFixed(2)}/${stoch.d.toFixed(2)}</li>
         <li>📌 Médias: EMA5 ${ema5.toFixed(5)} | EMA13 ${ema13.toFixed(5)}</li>
         <li>📊 Suporte: ${state.suporteKey.toFixed(5)} | Resistência: ${state.resistenciaKey.toFixed(5)}</li>
         <li>⚠️ Divergência: ${divergencias.tipoDivergencia}</li>
         <li>🚦 SuperTrend: ${superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'} (${superTrend.valor.toFixed(5)})</li>
         <li>🔄 Lateral: ${lateral ? 'SIM' : 'NÃO'}</li>
-        <li>⏳ Cooldown: ${state.cooldown > 0 ? `${state.cooldown} min` : 'NÃO'}</li>
       `;
     }
 
@@ -767,6 +710,7 @@ async function analisarMercado() {
     if (ultimosElement) ultimosElement.innerHTML = state.ultimos.map(i => `<li>${i}</li>`).join("");
 
     state.tentativasErro = 0;
+    console.log(`Análise concluída: ${sinal} (${score}%)`);
   } catch (e) {
     console.error("Erro na análise:", e);
     atualizarInterface("ERRO", 0, "ERRO", 0);
@@ -858,93 +802,111 @@ function sincronizarTimer() {
 }
 
 // =============================================
+// INICIALIZAÇÃO AUTOMÁTICA DA INTERFACE
+// =============================================
+function criarInterface() {
+  const container = document.createElement('div');
+  container.id = 'trading-bot-container';
+  container.style = `
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    max-width: 600px;
+    margin: 20px auto;
+    padding: 20px;
+    border: 1px solid #2d2d3d;
+    border-radius: 10px;
+    background-color: #1e1e2e;
+    color: #e0e0e0;
+    box-shadow: 0 0 15px rgba(0,0,0,0.7);
+  `;
+  
+  container.innerHTML = `
+    <h1 style="text-align: center; color: #4a9ff5; margin-bottom: 20px;">Robô EUR/USD</h1>
+    
+    <div style="display: flex; justify-content: space-between; align-items: center; background: #2d2d3d; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+      <div id="comando" style="font-size: 28px; font-weight: bold; padding: 10px 20px; border-radius: 5px; min-width: 120px; text-align: center;" class="esperar">--</div>
+      <div style="text-align: right;">
+        <div id="score" style="font-size: 18px; margin-bottom: 5px;">--</div>
+        <div style="font-size: 14px;">Atualização: <span id="hora">--:--:--</span></div>
+        <div style="font-size: 14px;">Próxima: <span id="timer">0:60</span></div>
+      </div>
+    </div>
+    
+    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+      <div style="flex: 1; background: #2d2d3d; padding: 10px; border-radius: 8px;">
+        <div style="font-size: 14px; color: #a0a0c0;">Tendência</div>
+        <div id="tendencia" style="font-size: 18px; font-weight: bold;">--</div>
+      </div>
+      <div style="flex: 1; background: #2d2d3d; padding: 10px; border-radius: 8px;">
+        <div style="font-size: 14px; color: #a0a0c0;">Força</div>
+        <div id="forca-tendencia" style="font-size: 18px; font-weight: bold;">--</div>
+      </div>
+    </div>
+    
+    <div style="background: #2d2d3d; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+      <h3 style="margin-top: 0; color: #4a9ff5;">Indicadores Atuais</h3>
+      <ul id="criterios" style="list-style: none; padding: 0; margin: 0;"></ul>
+    </div>
+    
+    <div style="background: #2d2d3d; padding: 15px; border-radius: 8px;">
+      <h3 style="margin-top: 0; color: #4a9ff5;">Últimos Sinais</h3>
+      <ul id="ultimos" style="list-style: none; padding: 0; margin: 0;"></ul>
+    </div>
+  `;
+  
+  document.body.appendChild(container);
+  document.body.style.backgroundColor = '#131320';
+  document.body.style.margin = '0';
+  document.body.style.padding = '20px';
+  
+  // Adicionar estilos dinâmicos
+  const style = document.createElement('style');
+  style.textContent = `
+    .call { background: linear-gradient(to right, #00c853, #009624); color: white; }
+    .put { background: linear-gradient(to right, #ff3b30, #c50000); color: white; }
+    .esperar { background: linear-gradient(to right, #5c6bc0, #3949ab); color: white; }
+    .erro { background: #ff9800; color: white; }
+  `;
+  document.head.appendChild(style);
+}
+
+// =============================================
 // INICIALIZAÇÃO
 // =============================================
 function iniciarAplicativo() {
-  const ids = ['comando','score','hora','timer','criterios','ultimos'];
-  const falt = ids.filter(id => !document.getElementById(id));
+  // Criar interface automaticamente
+  criarInterface();
   
-  if (falt.length > 0) {
-    console.error("Elementos faltando:", falt);
-    
-    // Criar elementos automaticamente se faltando
-    const container = document.createElement('div');
-    container.id = 'trading-bot-container';
-    container.style = `
-      font-family: Arial, sans-serif;
-      max-width: 600px;
-      margin: 20px auto;
-      padding: 20px;
-      border: 1px solid #ccc;
-      border-radius: 10px;
-      background-color: #1e1e2e;
-      color: #e0e0e0;
-      box-shadow: 0 0 10px rgba(0,0,0,0.5);
-    `;
-    
-    const createElement = (id, tag = 'div') => {
-      const el = document.createElement(tag);
-      el.id = id;
-      return el;
-    };
-    
-    container.innerHTML = `
-      <h1 style="text-align: center; color: #4a9ff5;">Robô EUR/USD</h1>
-      <div style="display: flex; justify-content: space-between; margin-bottom: 20px;">
-        <div>
-          <div id="comando" style="font-size: 24px; font-weight: bold; padding: 10px; border-radius: 5px; text-align: center;"></div>
-          <div id="score" style="margin-top: 5px;"></div>
-        </div>
-        <div>
-          <div>Atualização: <span id="hora"></span></div>
-          <div>Próxima: <span id="timer"></span></div>
-        </div>
-      </div>
-      <h3>Últimos Sinais</h3>
-      <ul id="ultimos" style="list-style: none; padding: 0;"></ul>
-      <h3>Indicadores Atuais</h3>
-      <ul id="criterios" style="list-style: none; padding: 0;"></ul>
-    `;
-    
-    document.body.appendChild(container);
-  }
-  
+  // Iniciar processos
   setInterval(atualizarRelogio, 1000);
   sincronizarTimer();
   
+  // Primeira análise após 2 segundos
   setTimeout(analisarMercado, 2000);
   
-  const backtestBtn = document.createElement('button');
-  backtestBtn.textContent = 'Executar Backtest (1 dia)';
-  backtestBtn.style.position = 'fixed';
-  backtestBtn.style.bottom = '10px';
-  backtestBtn.style.right = '10px';
-  backtestBtn.style.zIndex = '1000';
-  backtestBtn.style.padding = '10px';
-  backtestBtn.style.backgroundColor = '#2c3e50';
-  backtestBtn.style.color = 'white';
-  backtestBtn.style.border = 'none';
-  backtestBtn.style.borderRadius = '5px';
-  backtestBtn.style.cursor = 'pointer';
+  // Botão para análise manual
+  const refreshBtn = document.createElement('button');
+  refreshBtn.textContent = 'Atualizar Agora';
+  refreshBtn.style.position = 'fixed';
+  refreshBtn.style.top = '10px';
+  refreshBtn.style.right = '10px';
+  refreshBtn.style.zIndex = '1000';
+  refreshBtn.style.padding = '10px 15px';
+  refreshBtn.style.backgroundColor = '#4a9ff5';
+  refreshBtn.style.color = 'white';
+  refreshBtn.style.border = 'none';
+  refreshBtn.style.borderRadius = '5px';
+  refreshBtn.style.cursor = 'pointer';
+  refreshBtn.style.fontWeight = 'bold';
   
-  backtestBtn.onclick = async () => {
-    backtestBtn.textContent = 'Calculando...';
-    try {
-      const resultado = await executarBacktest(1);
-      
-      if (resultado.error) {
-        alert(`Erro: ${resultado.error}`);
-      } else {
-        alert(`Backtest completo!\nSinais: ${resultado.totalSinais}\nAcertos: ${resultado.acertos}\nTaxa: ${resultado.taxaAcerto}%`);
-        console.log("Detalhes:", resultado.resultados);
-      }
-    } catch (e) {
-      alert("Erro no backtest: " + e.message);
-    }
-    backtestBtn.textContent = 'Executar Backtest (1 dia)';
+  refreshBtn.onclick = () => {
+    clearInterval(state.intervaloAtual);
+    state.timer = 1;
+    sincronizarTimer();
   };
   
-  document.body.appendChild(backtestBtn);
+  document.body.appendChild(refreshBtn);
+  
+  console.log("Robô iniciado com sucesso!");
 }
 
 // Iniciar quando o documento estiver pronto
