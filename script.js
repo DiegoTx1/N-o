@@ -12,13 +12,7 @@ const state = {
   ultimoScore: 0,
   contadorLaterais: 0,
   marketOpen: true,
-  noticiasRecentes: [],
-  volumeProfile: [],
-  institutionalFlow: 0,
-  fairValueGap: { gap: false },
-  hiddenOrders: false,
-  tendenciaDetectada: "NEUTRA",
-  forcaTendencia: 0,
+  ultimaAnalise: Date.now(),
   dadosHistoricos: {
     M1: [],
     M5: [],
@@ -32,9 +26,8 @@ const state = {
   macdCache: {
     emaRapida: null,
     emaLenta: null,
-    macdLine: [],
-    signalLine: [],
-    originalLength: 0,
+    signalLine: 0,
+    ultimoIndice: -1,
     initialized: false
   },
   superTrendCache: { valor: 0, direcao: 0, ultimoIndice: -1 },
@@ -69,7 +62,7 @@ const CONFIG = {
     SUPERTREND: 7,
     VOLUME_PROFILE: 50,
     LIQUIDITY_ZONES: 20,
-    DIVERGENCIA_LOOKBACK: 8,
+    DIVERGENCIA_LOOKBACK: 5,  // Reduzido de 8 para 5
     EXTREME_LOOKBACK: 2
   },
   LIMIARES: {
@@ -143,7 +136,6 @@ async function obterDadosMultiTimeframe() {
       const apiKey = API_KEYS[currentKeyIndex];
       const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.FOREX_IDX}&interval=${tf}&outputsize=100&apikey=${apiKey}`;
       
-      // Adicionar timeout para evitar travamentos
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
       
@@ -166,17 +158,15 @@ async function obterDadosMultiTimeframe() {
         close: parseFloat(item.close),
         volume: parseFloat(item.volume) || 1
       }));
-      errorCount = 0; // Resetar contador de erros após sucesso
+      errorCount = 0;
     } catch (e) {
       console.error(`Erro no timeframe ${tf}:`, e);
       currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
       errorCount++;
       
-      // Manter dados anteriores em caso de erro
       const tfKey = tf === '1min' ? 'M1' : tf === '5min' ? 'M5' : 'M15';
       dados[tfKey] = state.dadosHistoricos[tfKey] || [];
       
-      // Esperar progressivamente mais a cada erro
       await new Promise(resolve => 
         setTimeout(resolve, Math.min(60000, 1000 * Math.pow(2, errorCount))
       );
@@ -216,7 +206,6 @@ function consolidarTendencias(tendencias) {
   let tendenciaFinal = "NEUTRA";
   let forcaFinal = 0;
   
-  // Calcular volatilidade relativa para pesos dinâmicos
   const volatilidades = {};
   let maxATR = 0;
   
@@ -319,13 +308,11 @@ function gerarSinal(indicadores, divergencias, lateral) {
     ema200
   } = indicadores;
   
-  // Validações iniciais - volume ajustado pela volatilidade
   const minVolume = (state.atrGlobal < 0.0005) ? volumeMedia * 0.8 : volumeMedia * 1.5;
   if (volume < minVolume) return "ESPERAR";
   
   if (lateral) return "ESPERAR";
   
-  // Sinais baseados em tendência forte
   if (tendencia.tendencia === "FORTE_ALTA") {
     const condicoesCompra = [
       close > emaCurta,
@@ -346,12 +333,10 @@ function gerarSinal(indicadores, divergencias, lateral) {
     if (condicoesVenda.filter(Boolean).length >= 3) return "PUT";
   }
   
-  // Breakout de suporte/resistência
   const limiteBreakout = 0.0002;
   if (close > (state.resistenciaKey + limiteBreakout)) return "CALL";
   if (close < (state.suporteKey - limiteBreakout)) return "PUT";
   
-  // Divergências relevantes
   if (divergencias.divergenciaRSI) {
     const relevante = Math.abs(divergencias.ultimoPreco - divergencias.penultimoPreco) > (state.atrGlobal * 0.5);
     if (relevante) {
@@ -360,7 +345,6 @@ function gerarSinal(indicadores, divergencias, lateral) {
     }
   }
   
-  // Sinais de reversão
   if (rsi < 25 && close > emaMedia) return "CALL";
   if (rsi > 75 && close < emaMedia) return "PUT";
   
@@ -454,9 +438,7 @@ const calcularMedia = {
     
     const cacheKey = `${timeframe}_EMA${periodo}`;
     
-    // Verificar continuidade usando índice
     if (state.emaCache[cacheKey] && state.emaCache[cacheKey].ultimoIndice === dados.length - 2) {
-      // Atualização incremental
       const k = 2 / (periodo + 1);
       const ultimoEMA = state.emaCache[cacheKey].valor;
       const novoValor = dados[dados.length - 1];
@@ -466,7 +448,6 @@ const calcularMedia = {
       state.emaCache[cacheKey].ultimoIndice = dados.length - 1;
       return novoEMA;
     } else {
-      // Cálculo completo
       const k = 2 / (periodo + 1);
       let ema = calcularMedia.simples(dados.slice(0, periodo), periodo) || dados[0];
       
@@ -486,7 +467,6 @@ const calcularMedia = {
 function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   if (closes.length < periodo + 1) return 50;
   
-  // Verificar continuidade dos dados
   if (state.rsiCache.ultimoIndice !== closes.length - 2) {
     state.rsiCache.initialized = false;
   }
@@ -504,7 +484,6 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
     state.rsiCache.initialized = true;
     state.rsiCache.ultimoIndice = closes.length - 1;
     
-    // Tratar divisão por zero
     if (Math.abs(state.rsiCache.avgLoss) < 0.0000001) {
       return state.rsiCache.avgGain > 0 ? 100 : 50;
     }
@@ -525,7 +504,6 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   
   state.rsiCache.ultimoIndice = closes.length - 1;
   
-  // Tratar divisão por zero
   if (Math.abs(state.rsiCache.avgLoss) < 0.0000001) {
     return state.rsiCache.avgGain > 0 ? 100 : 50;
   }
@@ -540,40 +518,39 @@ function calcularStochastic(highs, lows, closes,
   try {
     if (closes.length < periodoK) return { k: 50, d: 50 };
     
-    // Pré-alocar arrays para performance
-    const kValues = new Array(closes.length - periodoK + 1);
+    const startIndex = Math.max(0, closes.length - periodoK - periodoD);
+    const kValues = [];
     
     for (let i = periodoK - 1; i < closes.length; i++) {
-      const startIndex = Math.max(0, i - periodoK + 1);
-      if (startIndex < 0) continue; // Proteção contra índices negativos
+      const startIdx = Math.max(startIndex, i - periodoK + 1);
+      if (startIdx < 0) continue;
       
-      const sliceHigh = highs.slice(startIndex, i + 1);
-      const sliceLow = lows.slice(startIndex, i + 1);
+      let highestHigh = -Infinity;
+      let lowestLow = Infinity;
       
-      const highestHigh = Math.max(...sliceHigh);
-      const lowestLow = Math.min(...sliceLow);
+      for (let j = startIdx; j <= i; j++) {
+        if (highs[j] > highestHigh) highestHigh = highs[j];
+        if (lows[j] < lowestLow) lowestLow = lows[j];
+      }
+      
       const range = highestHigh - lowestLow;
       const k = range !== 0 ? ((closes[i] - lowestLow) / range) * 100 : 50;
-      kValues[i - periodoK + 1] = k;
+      kValues.push(k);
     }
     
-    const kSuavizado = new Array(kValues.length - periodoD + 1);
+    if (kValues.length < periodoD) return { k: 50, d: 50 };
+    
+    const kSuavizado = [];
     for (let i = periodoD - 1; i < kValues.length; i++) {
-      const startIndex = Math.max(0, i - periodoD + 1);
-      const slice = kValues.slice(startIndex, i + 1);
-      kSuavizado[i - periodoD + 1] = calcularMedia.simples(slice, periodoD) || 50;
+      const media = calcularMedia.simples(kValues.slice(i - periodoD + 1, i + 1), periodoD) || 50;
+      kSuavizado.push(media);
     }
     
-    const dValues = new Array(kSuavizado.length - periodoD + 1);
-    for (let i = periodoD - 1; i < kSuavizado.length; i++) {
-      const startIndex = Math.max(0, i - periodoD + 1);
-      const slice = kSuavizado.slice(startIndex, i + 1);
-      dValues[i - periodoD + 1] = calcularMedia.simples(slice, periodoD) || 50;
-    }
+    const d = calcularMedia.simples(kSuavizado.slice(-periodoD), periodoD) || 50;
     
     return {
       k: kSuavizado[kSuavizado.length - 1] || 50,
-      d: dValues[dValues.length - 1] || 50
+      d
     };
   } catch (e) {
     console.error("Erro no cálculo Stochastic:", e);
@@ -585,19 +562,16 @@ function calcularWilliams(highs, lows, closes, periodo = CONFIG.PERIODOS.WILLIAM
   try {
     if (closes.length < periodo) return 0;
     
-    const sliceHigh = highs.slice(-periodo);
-    const sliceLow = lows.slice(-periodo);
-    
-    // Substituir Math.max/Math.min por loops otimizados
+    const startIdx = Math.max(0, highs.length - periodo);
     let highestHigh = -Infinity;
     let lowestLow = Infinity;
-    for (let i = 0; i < sliceHigh.length; i++) {
-      if (sliceHigh[i] > highestHigh) highestHigh = sliceHigh[i];
-      if (sliceLow[i] < lowestLow) lowestLow = sliceLow[i];
+    
+    for (let i = startIdx; i < highs.length; i++) {
+      if (highs[i] > highestHigh) highestHigh = highs[i];
+      if (lows[i] < lowestLow) lowestLow = lows[i];
     }
     
     const range = highestHigh - lowestLow;
-    
     return range > 0 ? ((highestHigh - closes[closes.length - 1]) / range) * -100 : 0;
   } catch (e) {
     console.error("Erro no cálculo Williams:", e);
@@ -606,50 +580,66 @@ function calcularWilliams(highs, lows, closes, periodo = CONFIG.PERIODOS.WILLIAM
 }
 
 // =============================================
-// MACD CORRIGIDO (CÁLCULO INCREMENTAL)
+// MACD ALTAMENTE OTIMIZADO (SEM TRAVAMENTOS)
 // =============================================
 function calcularMACD(closes, rapida = 6, lenta = 13, sinal = 9) {
-  // Inicializar cache se necessário
-  if (!state.macdCache.initialized) {
-    state.macdCache = {
-      emaRapida: calcularMedia.exponencial(closes, rapida, 'M1'),
-      emaLenta: calcularMedia.exponencial(closes, lenta, 'M1'),
-      macdLine: [],
-      signalLine: [],
-      originalLength: closes.length,
-      initialized: true
-    };
-  }
+    if (closes.length < Math.max(rapida, lenta, sinal)) {
+        return { histograma: 0, macdLinha: 0, signalLine: 0 };
+    }
 
-  // Atualizar apenas o último ponto
-  const ultimoClose = closes[closes.length - 1];
-  
-  // Atualizar EMAs incrementalmente
-  const kRapida = 2 / (rapida + 1);
-  state.macdCache.emaRapida = ultimoClose * kRapida + state.macdCache.emaRapida * (1 - kRapida);
-  
-  const kLenta = 2 / (lenta + 1);
-  state.macdCache.emaLenta = ultimoClose * kLenta + state.macdCache.emaLenta * (1 - kLenta);
-  
-  // Calcular linha MACD
-  const macdAtual = state.macdCache.emaRapida - state.macdCache.emaLenta;
-  state.macdCache.macdLine.push(macdAtual);
-  
-  // Calcular linha de sinal (EMA do MACD)
-  if (state.macdCache.signalLine.length === 0) {
-    state.macdCache.signalLine = [macdAtual];
-  } else {
+    if (!state.macdCache.initialized) {
+        state.macdCache = {
+            emaRapida: calcularMedia.exponencial(closes, rapida, 'M1'),
+            emaLenta: calcularMedia.exponencial(closes, lenta, 'M1'),
+            signalLine: 0,
+            ultimoIndice: closes.length - 1,
+            initialized: true
+        };
+    }
+
+    const novosDados = closes.slice(state.macdCache.ultimoIndice + 1);
+    if (novosDados.length === 0) {
+        return {
+            histograma: state.macdCache.macdLinha - state.macdCache.signalLine,
+            macdLinha: state.macdCache.macdLinha,
+            signalLine: state.macdCache.signalLine
+        };
+    }
+
+    const kRapida = 2 / (rapida + 1);
+    const kLenta = 2 / (lenta + 1);
     const kSinal = 2 / (sinal + 1);
-    const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
-    const novoSignal = macdAtual * kSinal + ultimoSinal * (1 - kSinal);
-    state.macdCache.signalLine.push(novoSignal);
-  }
 
-  return {
-    histograma: state.macdCache.macdLine.slice(-1)[0] - state.macdCache.signalLine.slice(-1)[0],
-    macdLinha: state.macdCache.macdLine.slice(-1)[0],
-    signalLine: state.macdCache.signalLine.slice(-1)[0]
-  };
+    let emaRapida = state.macdCache.emaRapida;
+    let emaLenta = state.macdCache.emaLenta;
+    let linhaSinal = state.macdCache.signalLine;
+
+    for (const close of novosDados) {
+        emaRapida = close * kRapida + emaRapida * (1 - kRapida);
+        emaLenta = close * kLenta + emaLenta * (1 - kLenta);
+        const macdLinha = emaRapida - emaLenta;
+        
+        if (linhaSinal === 0) {
+            linhaSinal = macdLinha;
+        } else {
+            linhaSinal = macdLinha * kSinal + linhaSinal * (1 - kSinal);
+        }
+    }
+
+    state.macdCache = {
+        emaRapida,
+        emaLenta,
+        signalLine: linhaSinal,
+        macdLinha: emaRapida - emaLenta,
+        ultimoIndice: closes.length - 1,
+        initialized: true
+    };
+
+    return {
+        histograma: (emaRapida - emaLenta) - linhaSinal,
+        macdLinha: emaRapida - emaLenta,
+        signalLine: linhaSinal
+    };
 }
 
 function calcularVWAP(dados, periodo = CONFIG.PERIODOS.VWAP) {
@@ -698,7 +688,6 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
   try {
     if (dados.length < periodo) return { direcao: 0, valor: 0 };
     
-    // Verificar se o cache é válido
     if (state.superTrendCache.ultimoIndice === dados.length - 2) {
       const atr = calcularATR(dados.slice(-periodo-1), periodo);
       const current = dados[dados.length - 1];
@@ -717,7 +706,6 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
         superTrend = Math.min(upperBand, prevSuperTrend);
       }
       
-      // Atualizar cache
       state.superTrendCache = {
         valor: superTrend,
         direcao,
@@ -725,7 +713,6 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
       };
       return { direcao, valor: superTrend };
     } 
-    // Cálculo completo se cache inválido
     else {
       const atr = calcularATR(dados.slice(0, periodo), periodo);
       let superTrend = 0;
@@ -759,7 +746,6 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
       const ultimoValor = superTrends[superTrends.length - 1];
       const ultimaDirecao = direcao;
       
-      // Atualizar cache
       state.superTrendCache = {
         valor: ultimoValor,
         direcao: ultimaDirecao,
@@ -780,7 +766,6 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
     const slice = dados.slice(-periodo);
     const bucketSize = CONFIG.LIMIARES.BUCKET_SIZE;
     
-    // Substituir Math.min/Math.max por loops otimizados
     let minPrice = Infinity;
     let maxPrice = -Infinity;
     for (const vela of slice) {
@@ -788,16 +773,13 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
       if (vela.high > maxPrice) maxPrice = vela.high;
     }
     
-    // Usar Map para melhor performance
     const buckets = new Map();
     
-    // Inicializar buckets para toda a faixa de preços
     for (let price = minPrice; price <= maxPrice; price += bucketSize) {
       const bucketKey = price.toFixed(5);
       buckets.set(bucketKey, 0);
     }
     
-    // Preencher buckets otimizado
     for (const vela of slice) {
       const amplitude = vela.high - vela.low;
       if (amplitude === 0) continue;
@@ -809,20 +791,15 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
         const priceLevel = parseFloat((vela.low + b * bucketSize).toFixed(5));
         const bucketKey = priceLevel.toFixed(5);
         
-        // Criar bucket se não existir
-        if (!buckets.has(bucketKey)) {
-          buckets.set(bucketKey, 0);
-        }
+        if (!buckets.has(bucketKey)) buckets.set(bucketKey, 0);
         buckets.set(bucketKey, buckets.get(bucketKey) + volumePorBucket);
       }
     }
     
-    // Converter para array e ordenar
     const bucketsArray = Array.from(buckets.entries());
+    if (bucketsArray.length === 0) return { pvp: 0, vaHigh: 0, vaLow: 0 };
+    
     const niveisOrdenados = bucketsArray.sort((a, b) => b[1] - a[1]);
-    
-    if (niveisOrdenados.length === 0) return { pvp: 0, vaHigh: 0, vaLow: 0 };
-    
     const pvp = parseFloat(niveisOrdenados[0][0]);
     
     const volumeTotal = bucketsArray.reduce((sum, [, vol]) => sum + vol, 0);
@@ -834,18 +811,16 @@ function calcularVolumeProfile(dados, periodo = CONFIG.PERIODOS.VOLUME_PROFILE) 
     );
     
     let vaLow = pvp;
-    for (let i = 0; i < bucketsOrdenados.length; i++) {
+    for (let i = 0; i < bucketsOrdenados.length && volumeAcumulado < volumeAlvo; i++) {
       volumeAcumulado += bucketsOrdenados[i][1];
       vaLow = parseFloat(bucketsOrdenados[i][0]);
-      if (volumeAcumulado >= volumeAlvo) break;
     }
     
     volumeAcumulado = 0;
     let vaHigh = pvp;
-    for (let i = bucketsOrdenados.length - 1; i >= 0; i--) {
+    for (let i = bucketsOrdenados.length - 1; i >= 0 && volumeAcumulado < volumeAlvo; i--) {
       volumeAcumulado += bucketsOrdenados[i][1];
       vaHigh = parseFloat(bucketsOrdenados[i][0]);
-      if (volumeAcumulado >= volumeAlvo) break;
     }
     
     return { pvp, vaHigh, vaLow };
@@ -883,7 +858,7 @@ function calcularLiquidez(velas, periodo = CONFIG.PERIODOS.LIQUIDITY_ZONES) {
 
 function detectarDivergencias(closes, rsis, highs, lows) {
   try {
-    const lookback = CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK;
+    const lookback = Math.min(CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK, 5);
     const extremeLookback = CONFIG.PERIODOS.EXTREME_LOOKBACK;
     
     if (closes.length < lookback || rsis.length < lookback) {
@@ -934,7 +909,6 @@ function detectarDivergencias(closes, rsis, highs, lows) {
     let divergenciaOcultaAlta = false;
     let divergenciaOcultaBaixa = false;
     
-    // Armazenar últimos preços para análise de relevância
     const ultimoPreco = closes[closes.length - 1];
     const penultimoPreco = closes.length > 1 ? closes[closes.length - 2] : 0;
 
@@ -942,7 +916,6 @@ function detectarDivergencias(closes, rsis, highs, lows) {
       const lastPriceHigh = priceHighs[priceHighs.length - 1];
       const prevPriceHigh = priceHighs[priceHighs.length - 2];
       
-      // Filtro de relevância
       const diferencaPreco = Math.abs(lastPriceHigh.value - prevPriceHigh.value);
       const relevante = diferencaPreco > (state.atrGlobal * 0.5);
       
@@ -1011,26 +984,24 @@ function detectarDivergencias(closes, rsis, highs, lows) {
 async function analisarMercado() {
   if (state.leituraEmAndamento || !state.marketOpen) return;
   state.leituraEmAndamento = true;
+  state.ultimaAnalise = Date.now();
   
   try {
-    // Obter dados multi-timeframe
     const dadosPorTF = await obterDadosMultiTimeframe();
     state.dadosHistoricos.M1 = dadosPorTF.M1 || state.dadosHistoricos.M1;
     state.dadosHistoricos.M5 = dadosPorTF.M5 || state.dadosHistoricos.M5;
     state.dadosHistoricos.M15 = dadosPorTF.M15 || state.dadosHistoricos.M15;
     
-    // Limitar histórico para evitar crescimento excessivo
-    state.dadosHistoricos.M1 = state.dadosHistoricos.M1.slice(-500);
-    state.dadosHistoricos.M5 = state.dadosHistoricos.M5.slice(-300);
-    state.dadosHistoricos.M15 = state.dadosHistoricos.M15.slice(-200);
-    
-    // Calcular ATR para cada timeframe
+    // LIMITE REDUZIDO PARA MELHOR PERFORMANCE
+    state.dadosHistoricos.M1 = state.dadosHistoricos.M1.slice(-150);
+    state.dadosHistoricos.M5 = state.dadosHistoricos.M5.slice(-80);
+    state.dadosHistoricos.M15 = state.dadosHistoricos.M15.slice(-40);
+
     const atrM1 = calcularATR(state.dadosHistoricos.M1);
     const atrM5 = calcularATR(state.dadosHistoricos.M5);
     const atrM15 = calcularATR(state.dadosHistoricos.M15);
-    state.atrGlobal = atrM1; // Usar M1 como referência principal
+    state.atrGlobal = atrM1;
 
-    // Calcular tendências
     const tendencias = {
       M1: {
         ...calcularTendenciaTimeframe(state.dadosHistoricos.M1.map(v => v.close), 'M1'),
@@ -1046,12 +1017,10 @@ async function analisarMercado() {
       }
     };
     
-    // Consolidar tendências
     const tendenciaGeral = consolidarTendencias(tendencias);
     state.tendenciaDetectada = tendenciaGeral.tendencia;
     state.forcaTendencia = tendenciaGeral.forca;
 
-    // Análise técnica principal (M1)
     const dadosM1 = state.dadosHistoricos.M1;
     if (dadosM1.length < 50) {
       throw new Error(`Dados insuficientes (${dadosM1.length} velas). Aguardando mais dados...`);
@@ -1072,7 +1041,6 @@ async function analisarMercado() {
     const volumeProfile = calcularVolumeProfile(dadosM1);
     const liquidez = calcularLiquidez(dadosM1);
     
-    // CALCULAR ZONAS DE PREÇO ANTES DE GERAR SINAL
     const zonas = calcularZonasPreco(volumeProfile, liquidez, ema200);
     state.suporteKey = zonas.suporte;
     state.resistenciaKey = zonas.resistencia;
@@ -1082,7 +1050,6 @@ async function analisarMercado() {
     const macd = calcularMACD(closes);
     const williams = calcularWilliams(highs, lows, closes);
     
-    // Atualizar RSI History corretamente
     if (state.rsiHistory.length < closes.length) {
       const startIdx = Math.max(0, state.rsiHistory.length - 1);
       for (let i = startIdx; i < closes.length; i++) {
@@ -1114,12 +1081,10 @@ async function analisarMercado() {
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
-    // Validação de volatilidade mínima
     if (state.atrGlobal < 0.0005) {
       sinal = "ESPERAR";
     }
     
-    // Cooldown
     if (sinal !== "ESPERAR" && state.cooldown <= 0) {
       state.cooldown = 1;
     } else if (state.cooldown > 0) {
@@ -1175,7 +1140,7 @@ async function analisarMercado() {
     }
     
     if (++state.tentativasErro > 3) {
-      setTimeout(() => location.reload(), 30000); // Recarregar após 30 segundos
+      setTimeout(() => location.reload(), 30000);
     }
   } finally {
     state.leituraEmAndamento = false;
@@ -1183,7 +1148,7 @@ async function analisarMercado() {
 }
 
 // =============================================
-// CONTROLE DE TEMPO
+// CONTROLE DE TEMPO COM PROTEÇÃO CONTRA TRAVAMENTOS
 // =============================================
 function sincronizarTimer() {
   clearInterval(state.intervaloAtual);
@@ -1199,7 +1164,13 @@ function sincronizarTimer() {
   }
   
   state.intervaloAtual = setInterval(() => {
-    if (state.leituraEmAndamento) return; // Pular se ocupado
+    // Proteção contra travamentos
+    if (state.leituraEmAndamento && (Date.now() - state.ultimaAnalise > 10000)) {
+      state.leituraEmAndamento = false;
+      console.warn("Análise anterior excedeu o tempo limite");
+    }
+    
+    if (state.leituraEmAndamento) return;
     
     state.timer--;
     
@@ -1223,18 +1194,16 @@ let tentativasInicio = 0;
 function iniciarAplicativo() {
   tentativasInicio++;
   
-  // Parar após 10 tentativas
   if (tentativasInicio > 10) {
     console.error("Elementos críticos não carregados");
     return;
   }
   
-  // Verificar se elementos críticos existem
   const ids = ['comando','score','hora','timer','criterios','ultimos'];
   const falt = ids.filter(id => !document.getElementById(id));
   
   if (falt.length > 0) {
-    setTimeout(iniciarAplicativo, 500); // Tentar novamente após 500ms
+    setTimeout(iniciarAplicativo, 500);
     return;
   }
   
@@ -1243,18 +1212,16 @@ function iniciarAplicativo() {
   
   setTimeout(analisarMercado, 2000);
   
-  // Verificação de saúde
   setInterval(() => {
     if (state.ultimos.length > 0) {
       const ultimoRegistro = state.ultimos[0];
       const tempoDesdeUltimo = new Date() - new Date(ultimoRegistro.split(" - ")[0]);
-      if (tempoDesdeUltimo > 120000) { // 2 minutos sem atualização
+      if (tempoDesdeUltimo > 120000) {
         location.reload();
       }
     }
   }, 60000);
   
-  // Adicionar botão de backtest
   const backtestBtn = document.createElement('button');
   backtestBtn.textContent = 'Executar Backtest (5 dias)';
   backtestBtn.style.position = 'fixed';
