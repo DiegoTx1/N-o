@@ -65,7 +65,6 @@ function calcularRSI(closes) {
   return avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
 }
 
-// CORREÇÃO: Cálculo simplificado de S/R
 function calcularSuporteResistencia(velas) {
   if (velas.length === 0) return { resistencia: 0, suporte: 0 };
   
@@ -104,7 +103,6 @@ function gerarSinalCore(velas) {
   const precoAtual = closes[closes.length-1];
   const intervalo = sr.resistencia - sr.suporte;
   
-  // CORREÇÃO: Verificação de proximidade corrigida
   let pertoSuporte = false;
   let pertoResistencia = false;
   
@@ -140,7 +138,6 @@ function calcularVolatilidade(velas) {
   return calcularMediaSimples(variacoes);
 }
 
-// CORREÇÃO: Removida verificação de dados existentes
 async function carregarDados() {
   if (state.tentativasAPI >= CONFIG.MAX_TENTATIVAS_API) {
     state.usarDadosLocais = true;
@@ -265,12 +262,14 @@ async function analisarMercado() {
 }
 
 // =============================================
-// SISTEMA DE TIMER ROBUSTO
+// SISTEMA DE TIMER CORRIGIDO (AGORA EMITE SINAL)
 // =============================================
 function iniciarTimer() {
+  // Executar primeira análise imediatamente
   analisarMercado().catch(console.error);
   
   const timerInterval = setInterval(() => {
+    // Impede sobreposição de análises
     if (state.leituraEmAndamento) return;
     
     state.timer--;
@@ -280,9 +279,12 @@ function iniciarTimer() {
       timerElement.textContent = `0:${state.timer.toString().padStart(2, '0')}`;
     }
     
+    // CORREÇÃO: Só resetar o timer APÓS iniciar análise
     if (state.timer <= 0) {
-      state.timer = 60;
+      // Inicia análise ANTES do reset
       analisarMercado().catch(console.error);
+      // Reset do timer APÓS iniciar análise
+      state.timer = 60;
     }
   }, 1000);
 }
