@@ -648,6 +648,11 @@ async function analisarMercado() {
   state.leituraEmAndamento = true;
   
   try {
+    // Reinicializar caches
+    state.rsiCache = { avgGain: 0, avgLoss: 0, initialized: false };
+    state.macdCache = { emaRapida: null, emaLenta: null, macdLine: [], signalLine: [] };
+    state.superTrendCache = [];
+    
     const dados = await obterDadosTwelveData();
     state.dadosHistoricos = dados;
     
