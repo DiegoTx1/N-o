@@ -287,6 +287,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
     if (sinal === "CALL") comandoElement.textContent += " 📈";
     else if (sinal === "PUT") comandoElement.textContent += " 📉";
     else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
+    else if (sinal === "ERRO") comandoElement.textContent += " ❌";
   }
   
   const scoreElement = document.getElementById("score");
@@ -306,7 +307,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
 }
 
 // =============================================
-// INDICADORES TÉCNICOS (AJUSTADOS PARA FOREX)
+// INDICADORES TÉCNICOS (CORRIGIDOS)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -318,8 +319,11 @@ const calcularMedia = {
   exponencial: (dados, periodo) => {
     if (!Array.isArray(dados) || dados.length < periodo) return [];
     
-    const k = 2 / (periodo + 1);
+    // Calcular primeiro valor como SMA
     let ema = calcularMedia.simples(dados.slice(0, periodo), periodo);
+    if (ema === null) return [];
+    
+    const k = 2 / (periodo + 1);
     const emaArray = [ema];
     
     for (let i = periodo; i < dados.length; i++) {
@@ -417,9 +421,16 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
                     lenta = CONFIG.PERIODOS.MACD_LENTA, 
                     sinal = CONFIG.PERIODOS.MACD_SINAL) {
   try {
+    // Verificar dados suficientes
+    if (closes.length < lenta) return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+    
     if (state.macdCache.emaRapida === null || state.macdCache.emaLenta === null) {
       const emaRapida = calcularMedia.exponencial(closes, rapida);
       const emaLenta = calcularMedia.exponencial(closes, lenta);
+      
+      if (emaRapida.length === 0 || emaLenta.length === 0) {
+        return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
+      }
       
       const startIdx = Math.max(0, lenta - rapida);
       const macdLinha = emaRapida.slice(startIdx).map((val, idx) => val - emaLenta[idx]);
@@ -530,6 +541,12 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
     }
     
     state.superTrendCache.push({ direcao, valor: superTrend });
+    
+    // Limitar cache para evitar crescimento infinito
+    if (state.superTrendCache.length > 1000) {
+      state.superTrendCache = state.superTrendCache.slice(-1000);
+    }
+    
     return { direcao, valor: superTrend };
     
   } catch (e) {
@@ -624,25 +641,21 @@ function detectarDivergencias(closes, rsis, highs, lows) {
 }
 
 // =============================================
-// CORE DO SISTEMA (ATUALIZADO PARA EURUSD)
+// CORE DO SISTEMA (CORRIGIDO)
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
   state.leituraEmAndamento = true;
   
   try {
-    // Reinicializar caches
-    state.rsiCache = { avgGain: 0, avgLoss: 0, initialized: false };
-    state.macdCache = { emaRapida: null, emaLenta: null, macdLine: [], signalLine: [] };
-    state.superTrendCache = [];
-    
     const dados = await obterDadosTwelveData();
     state.dadosHistoricos = dados;
     
     const minPeriod = Math.max(
       CONFIG.PERIODOS.EMA_LONGA,
       CONFIG.PERIODOS.MACD_LENTA,
-      CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK
+      CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK,
+      CONFIG.PERIODOS.RSI + 1
     );
     
     if (dados.length < minPeriod) {
@@ -654,25 +667,41 @@ async function analisarMercado() {
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
 
-    // Calcular EMAs
+    // Calcular EMAs com verificação de erro
     const calcularEMA = (dados, periodo) => {
       const emaArray = calcularMedia.exponencial(dados, periodo);
-      return emaArray[emaArray.length - 1];
+      return emaArray.length > 0 ? emaArray[emaArray.length - 1] : null;
     };
 
     const ema5 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
     const ema13 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
 
+    if (ema5 === null || ema13 === null) {
+      throw new Error("EMA não pôde ser calculada");
+    }
+
     const superTrend = calcularSuperTrend(dados);
     const rsi = calcularRSI(closes);
+    
+    // Atualizar histórico de RSI de forma otimizada
+    if (state.rsiHistory.length > closes.length) {
+      state.rsiHistory = state.rsiHistory.slice(-closes.length);
+    } else if (state.rsiHistory.length < closes.length) {
+      // Preencher histórico se necessário
+      for (let i = state.rsiHistory.length; i < closes.length; i++) {
+        if (i >= CONFIG.PERIODOS.RSI) {
+          state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
+        } else {
+          state.rsiHistory.push(50); // Valor neutro até ter dados suficientes
+        }
+      }
+    } else {
+      // Atualizar o último valor
+      state.rsiHistory[state.rsiHistory.length - 1] = rsi;
+    }
+    
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
-    
-    // Preencher histórico de RSI
-    state.rsiHistory = [];
-    for (let i = CONFIG.PERIODOS.RSI; i < closes.length; i++) {
-      state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
-    }
     
     const divergencias = detectarDivergencias(closes, state.rsiHistory, highs, lows);
     const tendencia = avaliarTendencia(ema5, ema13);
