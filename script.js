@@ -31,7 +31,6 @@ const state = {
     signalLine: []
   },
   superTrendCache: [],
-  atrGlobal: 0,
   rsiHistory: [],
   cooldown: 0
 };
@@ -502,13 +501,11 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
   try {
     if (dados.length < periodo) return { direcao: 0, valor: 0 };
     
-    if (state.atrGlobal === 0) {
-      state.atrGlobal = calcularATR(dados, periodo);
-    }
+    // Recalcula ATR a cada execução
+    const atr = calcularATR(dados, periodo);
     
     const current = dados[dados.length - 1];
     const hl2 = (current.high + current.low) / 2;
-    const atr = state.atrGlobal;
     
     const upperBand = hl2 + (multiplicador * atr);
     const lowerBand = hl2 - (multiplicador * atr);
@@ -550,6 +547,13 @@ function detectarDivergencias(closes, rsis, highs, lows) {
       return { divergenciaRSI: false, tipoDivergencia: "NENHUMA" };
     }
     
+    // Usar apenas os últimos X candles
+    const startIdx = Math.max(0, closes.length - lookback);
+    const relevantCloses = closes.slice(startIdx);
+    const relevantRsis = rsis.slice(startIdx);
+    const relevantHighs = highs.slice(startIdx);
+    const relevantLows = lows.slice(startIdx);
+    
     const findExtremes = (data, isHigh = true) => {
       const extremes = [];
       for (let i = extremeLookback; i < data.length - extremeLookback; i++) {
@@ -576,10 +580,10 @@ function detectarDivergencias(closes, rsis, highs, lows) {
       return extremes;
     };
     
-    const priceHighs = findExtremes(highs, true);
-    const priceLows = findExtremes(lows, false);
-    const rsiHighs = findExtremes(rsis, true);
-    const rsiLows = findExtremes(rsis, false);
+    const priceHighs = findExtremes(relevantHighs, true);
+    const priceLows = findExtremes(relevantLows, false);
+    const rsiHighs = findExtremes(relevantRsis, true);
+    const rsiLows = findExtremes(relevantRsis, false);
     
     let divergenciaRegularAlta = false;
     let divergenciaRegularBaixa = false;
@@ -627,11 +631,22 @@ async function analisarMercado() {
   state.leituraEmAndamento = true;
   
   try {
+    // Reinicializar caches
+    state.rsiCache = { avgGain: 0, avgLoss: 0, initialized: false };
+    state.macdCache = { emaRapida: null, emaLenta: null, macdLine: [], signalLine: [] };
+    state.superTrendCache = [];
+    
     const dados = await obterDadosTwelveData();
     state.dadosHistoricos = dados;
     
-    if (dados.length < 20) {
-      throw new Error(`Dados insuficientes (${dados.length} velas)`);
+    const minPeriod = Math.max(
+      CONFIG.PERIODOS.EMA_LONGA,
+      CONFIG.PERIODOS.MACD_LENTA,
+      CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK
+    );
+    
+    if (dados.length < minPeriod) {
+      throw new Error(`Dados insuficientes (${dados.length}/${minPeriod} velas)`);
     }
     
     const velaAtual = dados[dados.length - 1];
@@ -653,7 +668,7 @@ async function analisarMercado() {
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
     
-    // Preencher histórico de RSI CORRETAMENTE
+    // Preencher histórico de RSI
     state.rsiHistory = [];
     for (let i = CONFIG.PERIODOS.RSI; i < closes.length; i++) {
       state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
@@ -679,15 +694,15 @@ async function analisarMercado() {
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
-    // Aplicar cooldown
-    if (sinal !== "ESPERAR" && state.cooldown <= 0) {
+    // Aplicar cooldown apenas para sinais fortes
+    const score = calcularScore(sinal, indicadores, divergencias);
+    
+    if (sinal !== "ESPERAR" && score >= CONFIG.LIMIARES.SCORE_ALTO && state.cooldown <= 0) {
       state.cooldown = 3;
     } else if (state.cooldown > 0) {
       state.cooldown--;
       sinal = "ESPERAR";
     }
-
-    const score = calcularScore(sinal, indicadores, divergencias);
 
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
