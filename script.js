@@ -31,6 +31,7 @@ const state = {
     signalLine: []
   },
   superTrendCache: [],
+  atrGlobal: 0,
   rsiHistory: [],
   cooldown: 0
 };
@@ -319,11 +320,10 @@ const calcularMedia = {
   exponencial: (dados, periodo) => {
     if (!Array.isArray(dados) || dados.length < periodo) return [];
     
-    // Calcular primeiro valor como SMA
+    const k = 2 / (periodo + 1);
     let ema = calcularMedia.simples(dados.slice(0, periodo), periodo);
     if (ema === null) return [];
     
-    const k = 2 / (periodo + 1);
     const emaArray = [ema];
     
     for (let i = periodo; i < dados.length; i++) {
@@ -512,11 +512,13 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
   try {
     if (dados.length < periodo) return { direcao: 0, valor: 0 };
     
-    // Recalcula ATR a cada execução
-    const atr = calcularATR(dados, periodo);
+    if (state.atrGlobal === 0) {
+      state.atrGlobal = calcularATR(dados, periodo);
+    }
     
     const current = dados[dados.length - 1];
     const hl2 = (current.high + current.low) / 2;
+    const atr = state.atrGlobal;
     
     const upperBand = hl2 + (multiplicador * atr);
     const lowerBand = hl2 - (multiplicador * atr);
@@ -541,12 +543,6 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
     }
     
     state.superTrendCache.push({ direcao, valor: superTrend });
-    
-    // Limitar cache para evitar crescimento infinito
-    if (state.superTrendCache.length > 1000) {
-      state.superTrendCache = state.superTrendCache.slice(-1000);
-    }
-    
     return { direcao, valor: superTrend };
     
   } catch (e) {
@@ -563,13 +559,6 @@ function detectarDivergencias(closes, rsis, highs, lows) {
     if (closes.length < lookback || rsis.length < lookback) {
       return { divergenciaRSI: false, tipoDivergencia: "NENHUMA" };
     }
-    
-    // Usar apenas os últimos X candles
-    const startIdx = Math.max(0, closes.length - lookback);
-    const relevantCloses = closes.slice(startIdx);
-    const relevantRsis = rsis.slice(startIdx);
-    const relevantHighs = highs.slice(startIdx);
-    const relevantLows = lows.slice(startIdx);
     
     const findExtremes = (data, isHigh = true) => {
       const extremes = [];
@@ -597,10 +586,10 @@ function detectarDivergencias(closes, rsis, highs, lows) {
       return extremes;
     };
     
-    const priceHighs = findExtremes(relevantHighs, true);
-    const priceLows = findExtremes(relevantLows, false);
-    const rsiHighs = findExtremes(relevantRsis, true);
-    const rsiLows = findExtremes(relevantRsis, false);
+    const priceHighs = findExtremes(highs, true);
+    const priceLows = findExtremes(lows, false);
+    const rsiHighs = findExtremes(rsis, true);
+    const rsiLows = findExtremes(rsis, false);
     
     let divergenciaRegularAlta = false;
     let divergenciaRegularBaixa = false;
@@ -641,30 +630,18 @@ function detectarDivergencias(closes, rsis, highs, lows) {
 }
 
 // =============================================
-// CORE DO SISTEMA (CORRIGIDO)
+// CORE DO SISTEMA (ATUALIZADO PARA EURUSD)
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
   state.leituraEmAndamento = true;
   
   try {
-    // Reinicializar caches
-    state.rsiCache = { avgGain: 0, avgLoss: 0, initialized: false };
-    state.macdCache = { emaRapida: null, emaLenta: null, macdLine: [], signalLine: [] };
-    state.superTrendCache = [];
-    
     const dados = await obterDadosTwelveData();
     state.dadosHistoricos = dados;
     
-    const minPeriod = Math.max(
-      CONFIG.PERIODOS.EMA_LONGA,
-      CONFIG.PERIODOS.MACD_LENTA,
-      CONFIG.PERIODOS.DIVERGENCIA_LOOKBACK,
-      CONFIG.PERIODOS.RSI + 1
-    );
-    
-    if (dados.length < minPeriod) {
-      throw new Error(`Dados insuficientes (${dados.length}/${minPeriod} velas)`);
+    if (dados.length < 20) {
+      throw new Error(`Dados insuficientes (${dados.length} velas)`);
     }
     
     const velaAtual = dados[dados.length - 1];
@@ -672,7 +649,7 @@ async function analisarMercado() {
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
 
-    // Calcular EMAs com verificação de erro
+    // Calcular EMAs
     const calcularEMA = (dados, periodo) => {
       const emaArray = calcularMedia.exponencial(dados, periodo);
       return emaArray.length > 0 ? emaArray[emaArray.length - 1] : null;
@@ -681,32 +658,22 @@ async function analisarMercado() {
     const ema5 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
     const ema13 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
 
+    // Verificação crítica para valores nulos
     if (ema5 === null || ema13 === null) {
       throw new Error("EMA não pôde ser calculada");
     }
 
     const superTrend = calcularSuperTrend(dados);
     const rsi = calcularRSI(closes);
-    
-    // Atualizar histórico de RSI de forma otimizada
-    if (state.rsiHistory.length > closes.length) {
-      state.rsiHistory = state.rsiHistory.slice(-closes.length);
-    } else if (state.rsiHistory.length < closes.length) {
-      // Preencher histórico se necessário
-      for (let i = state.rsiHistory.length; i < closes.length; i++) {
-        if (i >= CONFIG.PERIODOS.RSI) {
-          state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
-        } else {
-          state.rsiHistory.push(50); // Valor neutro até ter dados suficientes
-        }
-      }
-    } else {
-      // Atualizar o último valor
-      state.rsiHistory[state.rsiHistory.length - 1] = rsi;
-    }
-    
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
+    
+    // Preencher histórico de RSI CORRETAMENTE
+    state.rsiHistory = [];
+    for (let i = CONFIG.PERIODOS.RSI; i < closes.length; i++) {
+      // Usar subconjunto correto para cálculo histórico
+      state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
+    }
     
     const divergencias = detectarDivergencias(closes, state.rsiHistory, highs, lows);
     const tendencia = avaliarTendencia(ema5, ema13);
@@ -728,15 +695,15 @@ async function analisarMercado() {
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
-    // Aplicar cooldown apenas para sinais fortes
-    const score = calcularScore(sinal, indicadores, divergencias);
-    
-    if (sinal !== "ESPERAR" && score >= CONFIG.LIMIARES.SCORE_ALTO && state.cooldown <= 0) {
+    // Aplicar cooldown
+    if (sinal !== "ESPERAR" && state.cooldown <= 0) {
       state.cooldown = 3;
     } else if (state.cooldown > 0) {
       state.cooldown--;
       sinal = "ESPERAR";
     }
+
+    const score = calcularScore(sinal, indicadores, divergencias);
 
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
