@@ -40,7 +40,7 @@ const state = {
 };
 
 // =============================================
-// FUNÇÕES DE CÁLCULO TÉCNICO (CORRIGIDAS)
+// FUNÇÕES DE CÁLCULO TÉCNICO
 // =============================================
 function calcularMediaSimples(dados, periodo) {
   if (!dados || !dados.length || dados.length < periodo) return null;
@@ -70,9 +70,8 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   let gains = 0;
   let losses = 0;
   
-  // CORREÇÃO CRÍTICA: Ordem temporal correta
   for (let i = closes.length - periodo; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1]; // CORREÇÃO AQUI (i-1 é anterior)
+    const diff = closes[i] - closes[i - 1];
     if (diff > 0) gains += diff;
     else if (diff < 0) losses -= diff;
   }
@@ -97,7 +96,7 @@ function calcularVolumeRelativo(volumes, lookback = CONFIG.PERIODOS.VOLUME_LOOKB
 }
 
 // =============================================
-// GERADOR DE SINAIS (CORRIGIDO E COMPLETO)
+// GERADOR DE SINAIS
 // =============================================
 function gerarSinal() {
   const dados = state.dadosHistoricos;
@@ -128,7 +127,7 @@ function gerarSinal() {
   let score = 0;
   const criterios = [];
   
-  // CORREÇÃO: Sistema completo de tendência
+  // Sistema completo de tendência
   const tendenciaAltaForte = acimaEma89 && acimaEma21 && ema5AcimaEma21;
   const tendenciaBaixaForte = !acimaEma89 && !acimaEma21 && !ema5AcimaEma21;
   
@@ -262,10 +261,14 @@ async function obterDadosMercado() {
 }
 
 // =============================================
-// CICLO PRINCIPAL (OTIMIZADO)
+// CICLO PRINCIPAL
 // =============================================
 async function analisarMercado() {
-  if (state.leituraEmAndamento) return;
+  if (state.leituraEmAndamento) {
+    console.log("Análise já em andamento. Ignorando chamada duplicada.");
+    return;
+  }
+  
   state.leituraEmAndamento = true;
   
   try {
@@ -302,7 +305,10 @@ async function analisarMercado() {
 // =============================================
 function sincronizarTimer() {
   // Limpar timer existente
-  if (state.intervaloTimer) clearInterval(state.intervaloTimer);
+  if (state.intervaloTimer) {
+    clearInterval(state.intervaloTimer);
+    state.intervaloTimer = null;
+  }
   
   // Sincronizar com relógio atômico
   const agora = new Date();
@@ -311,13 +317,18 @@ function sincronizarTimer() {
   
   // Atualização em tempo real
   state.intervaloTimer = setInterval(() => {
-    state.timer--;
+    state.timer = Math.max(0, state.timer - 1);
     document.getElementById("timer").textContent = state.timer;
     
+    // Quando chegar a zero, disparar análise
     if (state.timer <= 0) {
       clearInterval(state.intervaloTimer);
-      analisarMercado();
-      sincronizarTimer(); // Reciclagem perfeita
+      state.intervaloTimer = null;
+      
+      // Executar análise e depois reiniciar timer
+      analisarMercado().finally(() => {
+        sincronizarTimer(); // Reinicia APÓS a análise
+      });
     }
   }, 1000);
 }
@@ -328,13 +339,17 @@ function sincronizarTimer() {
 function iniciar() {
   // Sincronizar processos
   sincronizarTimer();
+  
+  // Atualizar relógio a cada segundo
   setInterval(atualizarRelogio, 1000);
   atualizarRelogio();
   
-  // Análise inicial após estabilização
+  // Primeira análise após estabilização
   setTimeout(() => {
-    analisarMercado();
-  }, 2000);
+    if (!state.leituraEmAndamento) {
+      analisarMercado();
+    }
+  }, 1000);
 }
 
 // Iniciar quando documento estiver pronto
