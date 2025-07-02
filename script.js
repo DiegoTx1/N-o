@@ -37,10 +37,11 @@ const state = {
   ultimoScore: 0,
   historicoOperacoes: { win: 0, loss: 0 },
   emaCache: {
-    ema5: null,
-    ema21: null,
-    ema89: null
-  }
+    ema5: { lastValue: null, lastIndex: -1 },
+    ema21: { lastValue: null, lastIndex: -1 },
+    ema89: { lastValue: null, lastIndex: -1 }
+  },
+  intervaloTimer: null
 };
 
 // =============================================
@@ -55,25 +56,37 @@ function calcularMediaSimples(dados, periodo) {
 function calcularEMA(dados, periodo, cacheKey) {
   if (dados.length < periodo) return null;
   
-  // Se cache existe, calcula incremental
-  if (state.emaCache[cacheKey] !== null) {
+  const cache = state.emaCache[cacheKey];
+  
+  // Verifica se podemos calcular incrementalmente
+  if (cache.lastValue !== null && cache.lastIndex === dados.length - 2) {
     const k = 2 / (periodo + 1);
-    const ultimoValor = dados[dados.length - 1];
-    state.emaCache[cacheKey] = (ultimoValor * k) + (state.emaCache[cacheKey] * (1 - k));
-    return state.emaCache[cacheKey];
+    const newValue = dados[dados.length - 1] * k + cache.lastValue * (1 - k);
+    state.emaCache[cacheKey] = {
+      lastValue: newValue,
+      lastIndex: dados.length - 1
+    };
+    return newValue;
   }
   
-  // Primeiro cálculo
-  const mediaInicial = calcularMediaSimples(dados.slice(0, periodo), periodo);
-  state.emaCache[cacheKey] = mediaInicial;
+  // Precisa recálcular toda a série
+  let emaValues = [];
+  const sma = calcularMediaSimples(dados.slice(0, periodo), periodo);
+  emaValues.push(sma);
   
-  // Calcula EMA para os dados restantes
   for (let i = periodo; i < dados.length; i++) {
     const k = 2 / (periodo + 1);
-    state.emaCache[cacheKey] = (dados[i] * k) + (state.emaCache[cacheKey] * (1 - k));
+    const ema = dados[i] * k + emaValues[emaValues.length - 1] * (1 - k);
+    emaValues.push(ema);
   }
   
-  return state.emaCache[cacheKey];
+  const lastValue = emaValues[emaValues.length - 1];
+  state.emaCache[cacheKey] = {
+    lastValue: lastValue,
+    lastIndex: dados.length - 1
+  };
+  
+  return lastValue;
 }
 
 function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
@@ -97,12 +110,14 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
 }
 
 function calcularVolumeRelativo(volumes, lookback = CONFIG.PERIODOS.VOLUME_LOOKBACK) {
-  if (volumes.length < lookback) return 1.0;
+  if (volumes.length < lookback + 1) return 1.0;
   
   const volumeAtual = volumes[volumes.length - 1];
   const volumesAnteriores = volumes.slice(-lookback - 1, -1);
-  const mediaVolumes = calcularMediaSimples(volumesAnteriores, lookback);
   
+  if (volumesAnteriores.length < lookback) return 1.0;
+  
+  const mediaVolumes = calcularMediaSimples(volumesAnteriores, lookback);
   return volumeAtual / mediaVolumes;
 }
 
@@ -111,7 +126,9 @@ function calcularVolumeRelativo(volumes, lookback = CONFIG.PERIODOS.VOLUME_LOOKB
 // =============================================
 function gerarSinal() {
   const dados = state.dadosHistoricos;
-  if (dados.length < 90) return { sinal: "AGUARDANDO", score: 0, criterios: [] };
+  if (dados.length < CONFIG.PERIODOS.EMA_LONGA) {
+    return { sinal: "AGUARDANDO", score: 0, criterios: [] };
+  }
   
   const closes = dados.map(c => c.close);
   const volumes = dados.map(c => c.volume);
@@ -163,23 +180,14 @@ function gerarSinal() {
     criterios.push(`✅ Volume Acima da Média (${CONFIG.PESOS.VOLUME}%)`);
   }
   
-  // Sinalização
+  // Sinalização com lógica corrigida
   let sinal = "AGUARDANDO";
   
-  // Sinal de CALL (Alta)
   if (score >= 70) {
-    if (acimaEma21 && !rsiAlto) {
+    if ((acimaEma21 && !rsiAlto) || (!acimaEma21 && rsiBaixo)) {
       sinal = "CALL";
-    } else if (!acimaEma21 && rsiBaixo) {
-      sinal = "CALL";
-    }
-  }
-  
-  // Sinal de PUT (Baixa)
-  if (score >= 70) {
-    if (!acimaEma21 && !rsiBaixo) {
-      sinal = "PUT";
-    } else if (acimaEma21 && rsiAlto) {
+    } 
+    else if ((!acimaEma21 && !rsiBaixo) || (acimaEma21 && rsiAlto)) {
       sinal = "PUT";
     }
   }
@@ -211,12 +219,12 @@ function atualizarInterface(sinal, score, criterios = []) {
     
     if (sinal === "CALL") {
       comandoElement.textContent += " 📈";
-      document.getElementById("som-call").play();
       comandoElement.classList.add("sinal-alerta");
+      // document.getElementById("som-call").play(); // Descomente se tiver elemento de áudio
     } else if (sinal === "PUT") {
       comandoElement.textContent += " 📉";
-      document.getElementById("som-put").play();
       comandoElement.classList.add("sinal-alerta");
+      // document.getElementById("som-put").play(); // Descomente se tiver elemento de áudio
     } else if (sinal === "ERRO") {
       comandoElement.textContent += " ❌";
     } else {
@@ -329,9 +337,14 @@ async function analisarMercado() {
 }
 
 // =============================================
-// CONTROLE DE TEMPO
+// CONTROLE DE TEMPO (CORRIGIDO)
 // =============================================
 function sincronizarTimer() {
+  // Limpar intervalo existente
+  if (state.intervaloTimer) {
+    clearInterval(state.intervaloTimer);
+  }
+  
   const agora = new Date();
   const segundos = agora.getSeconds();
   state.timer = 60 - segundos;
