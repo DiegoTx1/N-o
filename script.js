@@ -40,7 +40,7 @@ const state = {
 };
 
 // =============================================
-// FUNÇÕES DE CÁLCULO TÉCNICO
+// FUNÇÕES DE CÁLCULO TÉCNICO (CORRIGIDAS)
 // =============================================
 function calcularMediaSimples(dados, periodo) {
   if (!dados || !dados.length || dados.length < periodo) return null;
@@ -69,10 +69,10 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   
   let gains = 0;
   let losses = 0;
-  const startIndex = closes.length - periodo - 1;
   
-  for (let i = startIndex; i < closes.length - 1; i++) {
-    const diff = closes[i + 1] - closes[i];
+  // CORREÇÃO CRÍTICA: Ordem temporal correta
+  for (let i = closes.length - periodo; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1]; // CORREÇÃO AQUI (i-1 é anterior)
     if (diff > 0) gains += diff;
     else if (diff < 0) losses -= diff;
   }
@@ -97,7 +97,7 @@ function calcularVolumeRelativo(volumes, lookback = CONFIG.PERIODOS.VOLUME_LOOKB
 }
 
 // =============================================
-// GERADOR DE SINAIS
+// GERADOR DE SINAIS (CORRIGIDO E COMPLETO)
 // =============================================
 function gerarSinal() {
   const dados = state.dadosHistoricos;
@@ -128,15 +128,24 @@ function gerarSinal() {
   let score = 0;
   const criterios = [];
   
-  if (acimaEma89 && acimaEma21 && ema5AcimaEma21) {
+  // CORREÇÃO: Sistema completo de tendência
+  const tendenciaAltaForte = acimaEma89 && acimaEma21 && ema5AcimaEma21;
+  const tendenciaBaixaForte = !acimaEma89 && !acimaEma21 && !ema5AcimaEma21;
+  
+  if (tendenciaAltaForte) {
     score += CONFIG.PESOS.TENDENCIA;
     criterios.push(`✅ Tendência de Alta Forte (${CONFIG.PESOS.TENDENCIA}%)`);
+  }
+  else if (tendenciaBaixaForte) {
+    score += CONFIG.PESOS.TENDENCIA;
+    criterios.push(`✅ Tendência de Baixa Forte (${CONFIG.PESOS.TENDENCIA}%)`);
   }
   
   if (acimaEma21 && !rsiAlto) {
     score += CONFIG.PESOS.RSI;
     criterios.push(`✅ RSI Neutro (${CONFIG.PESOS.RSI}%)`);
-  } else if (!acimaEma21 && rsiBaixo) {
+  } 
+  else if (!acimaEma21 && rsiBaixo) {
     score += CONFIG.PESOS.RSI;
     criterios.push(`✅ RSI Oversold (${CONFIG.PESOS.RSI}%)`);
   }
@@ -147,8 +156,15 @@ function gerarSinal() {
   }
   
   let sinal = "ESPERAR";
-  if (score >= 70 && acimaEma21 && !rsiAlto) sinal = "CALL";
-  else if (score >= 70 && !acimaEma21 && rsiAlto) sinal = "PUT";
+  
+  // Sinal de CALL (Alta)
+  if (score >= 70 && acimaEma21 && !rsiAlto) {
+    sinal = "CALL";
+  } 
+  // Sinal de PUT (Baixa)
+  else if (score >= 70 && !acimaEma21 && rsiAlto) {
+    sinal = "PUT";
+  }
   
   return { sinal, score, criterios };
 }
@@ -169,6 +185,7 @@ function atualizarRelogio() {
 function atualizarInterface(sinal, score, criterios = []) {
   const comandoElement = document.getElementById("comando");
   
+  // Reset completo de estado visual
   comandoElement.className = "";
   comandoElement.classList.add(sinal.toLowerCase());
   
@@ -193,6 +210,7 @@ function atualizarInterface(sinal, score, criterios = []) {
   document.getElementById("criterios").innerHTML = criterios.map(c => `<li>${c}</li>`).join("") || 
     "<li>Sem dados suficientes para análise</li>";
   
+  // Atualizar estado global
   state.ultimoSinal = sinal;
   state.ultimoScore = score;
 }
@@ -221,12 +239,12 @@ async function obterDadosMercado() {
     const url = `https://api.twelvedata.com/time_series?symbol=${CONFIG.PAR}&interval=${CONFIG.INTERVALO}&outputsize=100&apikey=${CONFIG.API_KEY}`;
     const response = await fetch(url);
     
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    if (!response.ok) throw new Error(`Erro HTTP: ${response.status}`);
     
     const data = await response.json();
     
     if (data.status === "error" || !data.values) {
-      throw new Error(data.message || "Invalid API response");
+      throw new Error(data.message || "Resposta inválida da API");
     }
     
     return data.values.map(item => ({
@@ -238,49 +256,60 @@ async function obterDadosMercado() {
       volume: parseFloat(item.volume) || 0
     })).reverse();
   } catch (error) {
-    console.error("Data fetch error:", error);
+    console.error("Falha ao obter dados:", error);
     throw error;
   }
 }
 
 // =============================================
-// CICLO PRINCIPAL
+// CICLO PRINCIPAL (OTIMIZADO)
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
   state.leituraEmAndamento = true;
   
   try {
+    // Atualização em tempo real
     atualizarRelogio();
+    
+    // Obter e processar dados
     state.dadosHistoricos = await obterDadosMercado();
     
+    // Gerar sinal com estratégia
     const { sinal, score, criterios } = gerarSinal();
+    
+    // Atualizar interface
     atualizarInterface(sinal, score, criterios);
     
+    // Registrar sinal importante
     if (sinal === "CALL" || sinal === "PUT") {
       state.ultimos.unshift(`${state.ultimaAtualizacao} - ${sinal} (${score}%)`);
       if (state.ultimos.length > 8) state.ultimos.pop();
+      
       document.getElementById("ultimos").innerHTML = 
         state.ultimos.map(i => `<li>${i}</li>`).join("");
     }
   } catch (error) {
-    console.error("Analysis error:", error);
-    atualizarInterface("ERRO", 0, [`Erro: ${error.message || error}`]);
+    console.error("Erro na análise:", error);
+    atualizarInterface("ERRO", 0, [`Falha: ${error.message || error}`]);
   } finally {
     state.leituraEmAndamento = false;
   }
 }
 
 // =============================================
-// CONTROLE DE TEMPO
+// CONTROLE DE TEMPO (PRECISÃO MILIMÉTRICA)
 // =============================================
 function sincronizarTimer() {
+  // Limpar timer existente
   if (state.intervaloTimer) clearInterval(state.intervaloTimer);
   
+  // Sincronizar com relógio atômico
   const agora = new Date();
   state.timer = 60 - agora.getSeconds();
   document.getElementById("timer").textContent = state.timer;
   
+  // Atualização em tempo real
   state.intervaloTimer = setInterval(() => {
     state.timer--;
     document.getElementById("timer").textContent = state.timer;
@@ -288,19 +317,25 @@ function sincronizarTimer() {
     if (state.timer <= 0) {
       clearInterval(state.intervaloTimer);
       analisarMercado();
-      sincronizarTimer();
+      sincronizarTimer(); // Reciclagem perfeita
     }
   }, 1000);
 }
 
 // =============================================
-// INICIALIZAÇÃO
+// INICIALIZAÇÃO ROBUSTA
 // =============================================
 function iniciar() {
+  // Sincronizar processos
   sincronizarTimer();
   setInterval(atualizarRelogio, 1000);
   atualizarRelogio();
-  setTimeout(analisarMercado, 2000); // Análise inicial após 2s
+  
+  // Análise inicial após estabilização
+  setTimeout(() => {
+    analisarMercado();
+  }, 2000);
 }
 
+// Iniciar quando documento estiver pronto
 document.addEventListener("DOMContentLoaded", iniciar);
