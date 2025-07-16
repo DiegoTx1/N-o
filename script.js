@@ -33,6 +33,7 @@ const state = {
     atrM1: null,
     atrM5: null,
     adxM1: null,
+    adxM5: null,
     bollingerM1: null,
     bollingerM5: null,
     entropiaM1: null,
@@ -40,7 +41,8 @@ const state = {
   },
   cooldown: 0,
   previsaoNeural: { direcao: "NEUTRA", confianca: 0 },
-  sentimento: 0
+  sentimento: 0,
+  indicadoresM1: null // Armazenar para usar na interface
 };
 
 const CONFIG = {
@@ -424,8 +426,8 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
     sentimentElement.textContent = `${(state.sentimento * 100).toFixed(1)}% ${sentimentIcon}`;
   }
   
-  if (entropyElement) {
-    entropyElement.textContent = `${(indicadoresM1.entropia * 100).toFixed(1)}%`;
+  if (entropyElement && state.indicadoresM1) {
+    entropyElement.textContent = `${(state.indicadoresM1.entropia * 100).toFixed(1)}%`;
   }
 }
 
@@ -606,11 +608,93 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
 }
 
 function calcularADX(dados, periodo = CONFIG.PERIODOS.ADX) {
-  // Implementação anterior mantida
+  try {
+    if (dados.length < periodo * 2) return 0;
+    
+    // Calcular +DM e -DM
+    const plusDM = [];
+    const minusDM = [];
+    
+    for (let i = 1; i < dados.length; i++) {
+      const upMove = dados[i].high - dados[i-1].high;
+      const downMove = dados[i-1].low - dados[i].low;
+      
+      if (upMove > downMove && upMove > 0) {
+        plusDM.push(upMove);
+        minusDM.push(0);
+      } else if (downMove > upMove && downMove > 0) {
+        plusDM.push(0);
+        minusDM.push(downMove);
+      } else {
+        plusDM.push(0);
+        minusDM.push(0);
+      }
+    }
+    
+    // Calcular True Range
+    const tr = [];
+    for (let i = 1; i < dados.length; i++) {
+      tr.push(Math.max(
+        dados[i].high - dados[i].low,
+        Math.abs(dados[i].high - dados[i-1].close),
+        Math.abs(dados[i].low - dados[i-1].close)
+      ));
+    }
+    
+    // Suavizar valores
+    const smoothPlusDM = [calcularMedia.simples(plusDM.slice(0, periodo), periodo)];
+    const smoothMinusDM = [calcularMedia.simples(minusDM.slice(0, periodo), periodo)];
+    const smoothTR = [calcularMedia.simples(tr.slice(0, periodo), periodo)];
+    
+    for (let i = periodo; i < plusDM.length; i++) {
+      smoothPlusDM.push(smoothPlusDM[smoothPlusDM.length - 1] * (periodo - 1)/periodo + plusDM[i]);
+      smoothMinusDM.push(smoothMinusDM[smoothMinusDM.length - 1] * (periodo - 1)/periodo + minusDM[i]);
+      smoothTR.push(smoothTR[smoothTR.length - 1] * (periodo - 1)/periodo + tr[i]);
+    }
+    
+    // Calcular DI+ e DI-
+    const plusDI = smoothPlusDM.map((dm, i) => (dm / smoothTR[i]) * 100);
+    const minusDI = smoothMinusDM.map((dm, i) => (dm / smoothTR[i]) * 100);
+    
+    // Calcular DX
+    const dx = plusDI.map((pdi, i) => {
+      const mdi = minusDI[i];
+      return (Math.abs(pdi - mdi) / (pdi + mdi)) * 100;
+    });
+    
+    // Calcular ADX
+    const adx = [calcularMedia.simples(dx.slice(0, periodo), periodo)];
+    for (let i = periodo; i < dx.length; i++) {
+      adx.push((adx[adx.length - 1] * (periodo - 1) + dx[i]) / periodo);
+    }
+    
+    return adx[adx.length - 1] || 0;
+  } catch (e) {
+    console.error("Erro no cálculo ADX:", e);
+    return 0;
+  }
 }
 
 function calcularBollingerBands(closes, periodo = CONFIG.PERIODOS.BOLLINGER, desvios = 2) {
-  // Implementação anterior mantida
+  try {
+    if (closes.length < periodo) return { superior: 0, inferior: 0, media: 0 };
+    
+    const media = calcularMedia.simples(closes.slice(-periodo), periodo);
+    const desvioPadrao = Math.sqrt(
+      closes.slice(-periodo)
+        .map(val => Math.pow(val - media, 2))
+        .reduce((sum, val) => sum + val, 0) / periodo
+    );
+    
+    return {
+      superior: media + (desvioPadrao * desvios),
+      inferior: media - (desvioPadrao * desvios),
+      media: media
+    };
+  } catch (e) {
+    console.error("Erro no cálculo Bollinger Bands:", e);
+    return { superior: 0, inferior: 0, media: 0 };
+  }
 }
 
 // =============================================
@@ -750,6 +834,9 @@ async function analisarMercado() {
       tendencia: tendenciaM5,
       superTrend: superTrendM5
     };
+
+    // Armazenar para uso na interface
+    state.indicadoresM1 = indicadoresM1;
 
     state.tendenciaDetectada = tendenciaM1.tendencia;
     state.forcaTendencia = Math.round(tendenciaM1.forca);
