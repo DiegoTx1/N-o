@@ -301,7 +301,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
 }
 
 // =============================================
-// INDICADORES TÉCNICOS (OTIMIZADOS PARA CRIPTO)
+// INDICADORES TÉCNICOS (CORRIGIDOS)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -379,7 +379,7 @@ function calcularStochastic(highs, lows, closes,
       const highestHigh = Math.max(...sliceHigh);
       const lowestLow = Math.min(...sliceLow);
       const range = highestHigh - lowestLow;
-      const k = range !== 0 ? ((closes[i] - lowestLow) / range) * 100 : 0; // Corrigido para 0
+      const k = range !== 0 ? ((closes[i] - lowestLow) / range) * 100 : 50; // Corrigido para 50 quando range=0
       kValues.push(k);
     }
     
