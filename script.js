@@ -84,7 +84,7 @@ const CONFIG = {
 // =============================================
 // GERENCIADOR DE CHAVES API
 // =============================================
-const API_KEYS = 
+const API_KEYS = [
   "0105e6681b894e0185704171c53f5075"
 ];
 let currentKeyIndex = 0;
