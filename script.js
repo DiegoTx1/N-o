@@ -15,41 +15,15 @@ const state = {
   forcaTendencia: 0,
   dadosHistoricosM1: [],
   dadosHistoricosM5: [],
-  resistenciaKey: 0,
-  suporteKey: 0,
-  cache: {
-    lastDataLengthM1: 0,
-    lastDataLengthM5: 0,
-    rsiM1: null,
-    rsiM5: null,
-    ema8M1: null,
-    ema21M1: null,
-    ema50M1: null,
-    ema8M5: null,
-    ema21M5: null,
-    ema50M5: null,
-    superTrendM1: null,
-    superTrendM5: null,
-    atrM1: null,
-    atrM5: null,
-    adxM1: null,
-    adxM5: null,
-    bollingerM1: null,
-    bollingerM5: null,
-    entropiaM1: null,
-    entropiaM5: null
-  },
   cooldown: 0,
-  previsaoNeural: { direcao: "NEUTRA", confianca: 0 },
-  sentimento: 0,
-  indicadoresM1: null // Armazenar para usar na interface
+  indicadoresM1: null,
+  lastCandleTimeM1: null,
+  lastCandleTimeM5: null
 };
 
 const CONFIG = {
   API_ENDPOINTS: {
-    TWELVE_DATA: "https://api.twelvedata.com",
-    NEURAL_API: "https://api-neural-trading.com/v3/predict",
-    SENTIMENT_API: "https://api-marketsentiment.com/eurusd"
+    TWELVE_DATA: "https://api.twelvedata.com"
   },
   PARES: {
     FOREX: "EUR/USD"
@@ -64,11 +38,8 @@ const CONFIG = {
     MACD_RAPIDA: 12,
     MACD_LENTA: 26,
     MACD_SINAL: 9,
-    ANALISE_LATERAL: 20,
     ATR: 14,
     SUPERTREND: 10,
-    DIVERGENCIA_LOOKBACK: 8,
-    EXTREME_LOOKBACK: 2,
     ADX: 14,
     BOLLINGER: 20,
     ENTROPIA: 14
@@ -82,24 +53,18 @@ const CONFIG = {
     STOCH_OVERSOLD: 20,
     VARIACAO_LATERAL: 0.0005,
     ATR_LIMIAR: 0.0008,
-    LATERALIDADE_LIMIAR: 0.0005,
     ADX_TENDENCIA: 25,
     BOLLINGER_LARGURA: 0.0008,
-    ENTROPIA_ALTA: 0.5,
-    SENTIMENTO_ALTO: 0.4,
-    SENTIMENTO_BAIXO: -0.4
+    ENTROPIA_ALTA: 0.5
   },
   PESOS: {
     RSI: 1.5,
     MACD: 2.0,
     TENDENCIA: 2.5,
     SUPERTREND: 1.8,
-    DIVERGENCIA: 1.7,
     ADX: 2.2,
     BOLLINGER: 1.9,
-    ENTROPIA: 2.0,
-    NEURAL: 3.0,
-    SENTIMENTO: 2.5
+    ENTROPIA: 2.0
   }
 };
 
@@ -186,45 +151,6 @@ function calcularEntropiaMercado(dados, periodo = CONFIG.PERIODOS.ENTROPIA) {
   }
 }
 
-// 2. PREVISÃO POR REDE NEURAL
-async function previsaoRedeNeural(closes) {
-  try {
-    const response = await fetch(CONFIG.API_ENDPOINTS.NEURAL_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        symbol: CONFIG.PARES.FOREX,
-        series: closes.slice(-100) 
-      })
-    });
-    
-    if (!response.ok) throw new Error("Erro na API neural");
-    
-    const data = await response.json();
-    return {
-      direcao: data.prediction > 0.7 ? "ALTA" : data.prediction < 0.3 ? "BAIXA" : "NEUTRA",
-      confianca: Math.round(Math.abs(data.prediction - 0.5) * 200)
-    };
-  } catch (e) {
-    console.error("Falha na previsão neural:", e);
-    return { direcao: "NEUTRA", confianca: 0 };
-  }
-}
-
-// 3. ANÁLISE DE SENTIMENTO EM TEMPO REAL
-async function analisarSentimento() {
-  try {
-    const response = await fetch(CONFIG.API_ENDPOINTS.SENTIMENT_API);
-    if (!response.ok) throw new Error("Erro na API de sentimento");
-    
-    const data = await response.json();
-    return parseFloat(data.sentimentIndex) || 0;
-  } catch (e) {
-    console.error("Falha na análise de sentimento:", e);
-    return 0;
-  }
-}
-
 // =============================================
 // SISTEMA DE CONFIRMAÇÃO MULTI TIMEFRAME
 // =============================================
@@ -247,21 +173,10 @@ function confirmarSinalMultiTimeframe(sinalM1, indicadoresM1, indicadoresM5) {
      indicadoresM1.superTrend.direcao < 0 && 
      indicadoresM5.superTrend.direcao < 0);
   
-  // Filtro 3: Neural e Sentimento
-  const neuralAlinhada = 
-    (sinalM1 === "CALL" && state.previsaoNeural.direcao === "ALTA") ||
-    (sinalM1 === "PUT" && state.previsaoNeural.direcao === "BAIXA");
-  
-  const sentimentoAlinhado = 
-    (sinalM1 === "CALL" && state.sentimento > CONFIG.LIMIARES.SENTIMENTO_ALTO) ||
-    (sinalM1 === "PUT" && state.sentimento < CONFIG.LIMIARES.SENTIMENTO_BAIXO);
-  
   // Requer pelo menos 2 confirmações
   const confirmacoes = [
     tendenciaAlinhada,
-    superTrendAlinhado,
-    neuralAlinhada,
-    sentimentoAlinhado
+    superTrendAlinhado
   ].filter(Boolean).length;
   
   return confirmacoes >= 2;
@@ -299,7 +214,7 @@ async function gerarSinalAvancado(indicadoresM1, indicadoresM5) {
     }
   }
   
-  // 2. Confirmação com M5 e fatores quânticos
+  // 2. Confirmação com M5 e fatores técnicos
   if (sinalM1 !== "ESPERAR") {
     const confirmado = confirmarSinalMultiTimeframe(
       sinalM1, 
@@ -327,28 +242,21 @@ function calcularScore(sinal, indicadoresM1) {
   const fatores = {
     tendencia: indicadoresM1.tendencia.forca * 0.25,
     rsi: sinal === "CALL" 
-      ? (CONFIG.LIMIARES.RSI_OVERSOLD - indicadoresM1.rsi) / 10 
-      : (indicadoresM1.rsi - CONFIG.LIMIARES.RSI_OVERBOUGHT) / 10,
+      ? Math.max(0, (CONFIG.LIMIARES.RSI_OVERSOLD - indicadoresM1.rsi) / 10)
+      : Math.max(0, (indicadoresM1.rsi - CONFIG.LIMIARES.RSI_OVERBOUGHT) / 10),
     bollinger: sinal === "CALL"
       ? (indicadoresM1.bollinger.media - indicadoresM1.close) / 
         (indicadoresM1.bollinger.media - indicadoresM1.bollinger.inferior) * 20
       : (indicadoresM1.close - indicadoresM1.bollinger.media) / 
         (indicadoresM1.bollinger.superior - indicadoresM1.bollinger.media) * 20,
-    adx: indicadoresM1.adx * 0.3,
-    neural: state.previsaoNeural.confianca * 0.3,
-    sentimento: Math.abs(state.sentimento) * 25,
-    entropia: (1 - indicadoresM1.entropia) * 15
+    adx: Math.min(30, indicadoresM1.adx * 0.3),
+    entropia: Math.min(30, (1 - indicadoresM1.entropia) * 15)
   };
-  
-  // Limitar valores
-  Object.keys(fatores).forEach(key => {
-    fatores[key] = Math.min(30, Math.max(0, fatores[key]));
-  });
   
   // Cálculo do score
   let score = 40; // Base
   score += fatores.tendencia + fatores.rsi + fatores.bollinger + 
-           fatores.adx + fatores.neural + fatores.sentimento + fatores.entropia;
+           fatores.adx + fatores.entropia;
   
   return Math.min(100, Math.max(0, Math.round(score)));
 }
@@ -413,19 +321,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
   }
   
   // Atualizar informações avançadas
-  const neuralElement = document.getElementById("neural");
-  const sentimentElement = document.getElementById("sentimento");
   const entropyElement = document.getElementById("entropia");
-  
-  if (neuralElement) {
-    neuralElement.textContent = `${state.previsaoNeural.direcao} (${state.previsaoNeural.confianca}%)`;
-  }
-  
-  if (sentimentElement) {
-    const sentimentIcon = state.sentimento > 0.2 ? '📈' : state.sentimento < -0.2 ? '📉' : '↔️';
-    sentimentElement.textContent = `${(state.sentimento * 100).toFixed(1)}% ${sentimentIcon}`;
-  }
-  
   if (entropyElement && state.indicadoresM1) {
     entropyElement.textContent = `${(state.indicadoresM1.entropia * 100).toFixed(1)}%`;
   }
@@ -711,8 +607,22 @@ async function analisarMercado() {
       obterDadosTwelveData("5min")
     ]);
     
+    // Verificar se os dados mudaram
+    const lastCandleM1 = dadosM1.length > 0 ? dadosM1[dadosM1.length - 1].time : null;
+    const lastCandleM5 = dadosM5.length > 0 ? dadosM5[dadosM5.length - 1].time : null;
+    
+    const dadosMudaramM1 = state.lastCandleTimeM1 !== lastCandleM1;
+    const dadosMudaramM5 = state.lastCandleTimeM5 !== lastCandleM5;
+    
+    if (!dadosMudaramM1 && !dadosMudaramM5) {
+      state.leituraEmAndamento = false;
+      return;
+    }
+    
     state.dadosHistoricosM1 = dadosM1;
     state.dadosHistoricosM5 = dadosM5;
+    state.lastCandleTimeM1 = lastCandleM1;
+    state.lastCandleTimeM5 = lastCandleM5;
     
     if (dadosM1.length < 100 || dadosM5.length < 100) {
       throw new Error(`Dados insuficientes (M1:${dadosM1.length} M5:${dadosM5.length})`);
@@ -728,91 +638,27 @@ async function analisarMercado() {
     const highsM5 = dadosM5.map(v => v.high);
     const lowsM5 = dadosM5.map(v => v.low);
 
-    // Verificar se os dados mudaram
-    const dadosMudaramM1 = state.dadosHistoricosM1.length !== state.cache.lastDataLengthM1;
-    const dadosMudaramM5 = state.dadosHistoricosM5.length !== state.cache.lastDataLengthM5;
-    
-    if (dadosMudaramM1 || dadosMudaramM5) {
-      state.cache.lastDataLengthM1 = dadosM1.length;
-      state.cache.lastDataLengthM5 = dadosM5.length;
-      
-      // Resetar cache somente para os timeframe modificados
-      if (dadosMudaramM1) {
-        state.cache.rsiM1 = null;
-        state.cache.ema8M1 = null;
-        state.cache.ema21M1 = null;
-        state.cache.ema50M1 = null;
-        state.cache.superTrendM1 = null;
-        state.cache.atrM1 = null;
-        state.cache.adxM1 = null;
-        state.cache.bollingerM1 = null;
-        state.cache.entropiaM1 = null;
-      }
-      
-      if (dadosMudaramM5) {
-        state.cache.rsiM5 = null;
-        state.cache.ema8M5 = null;
-        state.cache.ema21M5 = null;
-        state.cache.ema50M5 = null;
-        state.cache.superTrendM5 = null;
-        state.cache.atrM5 = null;
-        state.cache.adxM5 = null;
-        state.cache.bollingerM5 = null;
-        state.cache.entropiaM5 = null;
-      }
-    }
-
-    // Função para calcular EMA com cache
-    const calcularEMA = (dados, periodo, cacheKey) => {
-      if (!state.cache[cacheKey] || (cacheKey.includes("M1") && dadosMudaramM1) || (cacheKey.includes("M5") && dadosMudaramM5)) {
-        const emaArray = calcularMedia.exponencial(dados, periodo);
-        state.cache[cacheKey] = emaArray[emaArray.length - 1];
-      }
-      return state.cache[cacheKey];
-    };
-
     // Calcular indicadores para M1
-    const ema8M1 = calcularEMA(closesM1, 8, "ema8M1");
-    const ema21M1 = calcularEMA(closesM1, 21, "ema21M1");
-    const ema50M1 = calcularEMA(closesM1, 50, "ema50M1");
+    const ema8M1 = calcularMedia.exponencial(closesM1, 8).slice(-1)[0];
+    const ema21M1 = calcularMedia.exponencial(closesM1, 21).slice(-1)[0];
+    const ema50M1 = calcularMedia.exponencial(closesM1, 50).slice(-1)[0];
     
-    const rsiM1 = state.cache.rsiM1 || calcularRSI(closesM1.slice(-100));
-    state.cache.rsiM1 = rsiM1;
-    
-    const stochM1 = state.cache.stochM1 || calcularStochastic(highsM1, lowsM1, closesM1);
-    state.cache.stochM1 = stochM1;
-    
-    const atrM1 = state.cache.atrM1 || calcularATR(dadosM1);
-    state.cache.atrM1 = atrM1;
-    
+    const rsiM1 = calcularRSI(closesM1.slice(-100));
+    const stochM1 = calcularStochastic(highsM1, lowsM1, closesM1);
+    const atrM1 = calcularATR(dadosM1);
     const tendenciaM1 = avaliarTendencia(ema8M1, ema21M1, ema50M1, velaAtualM1.close, atrM1);
-    const superTrendM1 = state.cache.superTrendM1 || calcularSuperTrend(dadosM1);
-    state.cache.superTrendM1 = superTrendM1;
-    
-    const adxM1 = state.cache.adxM1 || calcularADX(dadosM1);
-    state.cache.adxM1 = adxM1;
-    
-    const bollingerM1 = state.cache.bollingerM1 || calcularBollingerBands(closesM1);
-    state.cache.bollingerM1 = bollingerM1;
-    
-    const entropiaM1 = state.cache.entropiaM1 || calcularEntropiaMercado(dadosM1);
-    state.cache.entropiaM1 = entropiaM1;
+    const superTrendM1 = calcularSuperTrend(dadosM1);
+    const adxM1 = calcularADX(dadosM1);
+    const bollingerM1 = calcularBollingerBands(closesM1);
+    const entropiaM1 = calcularEntropiaMercado(dadosM1);
     
     // Calcular indicadores para M5
-    const ema8M5 = calcularEMA(closesM5, 8, "ema8M5");
-    const ema21M5 = calcularEMA(closesM5, 21, "ema21M5");
-    const ema50M5 = calcularEMA(closesM5, 50, "ema50M5");
-    
-    const atrM5 = state.cache.atrM5 || calcularATR(dadosM5);
-    state.cache.atrM5 = atrM5;
-    
+    const ema8M5 = calcularMedia.exponencial(closesM5, 8).slice(-1)[0];
+    const ema21M5 = calcularMedia.exponencial(closesM5, 21).slice(-1)[0];
+    const ema50M5 = calcularMedia.exponencial(closesM5, 50).slice(-1)[0];
+    const atrM5 = calcularATR(dadosM5);
     const tendenciaM5 = avaliarTendencia(ema8M5, ema21M5, ema50M5, velaAtualM5.close, atrM5);
-    const superTrendM5 = state.cache.superTrendM5 || calcularSuperTrend(dadosM5);
-    state.cache.superTrendM5 = superTrendM5;
-    
-    // Obter dados de inteligência artificial
-    state.previsaoNeural = await previsaoRedeNeural(closesM1);
-    state.sentimento = await analisarSentimento();
+    const superTrendM5 = calcularSuperTrend(dadosM5);
 
     // Preparar dados para geração de sinal
     const indicadoresM1 = {
@@ -848,10 +694,10 @@ async function analisarMercado() {
     // Cooldown adaptativo
     if (sinal !== "ESPERAR" && state.cooldown <= 0 && score > CONFIG.LIMIARES.SCORE_MEDIO) {
       state.cooldown = (score > CONFIG.LIMIARES.SCORE_ALTO) ? 4 : 3;
-      sinal = "ESPERAR";
     } 
     
     if (state.cooldown > 0) {
+      sinal = "ESPERAR";
       state.cooldown--;
     }
 
@@ -872,8 +718,6 @@ async function analisarMercado() {
         <li>🎯 Bollinger: ${bollingerM1.inferior.toFixed(5)}-${bollingerM1.superior.toFixed(5)}</li>
         <li>🚦 SuperTrend: ${superTrendM1.direcao > 0 ? 'ALTA' : 'BAIXA'}</li>
         <li>📏 ADX: ${adxM1.toFixed(2)} ${adxM1 > 25 ? '📈' : ''}</li>
-        <li>🧠 Neural: ${state.previsaoNeural.direcao} (${state.previsaoNeural.confianca}%)</li>
-        <li>😃 Sentimento: ${(state.sentimento * 100).toFixed(1)}%</li>
         <li>🌀 Entropia: ${(entropiaM1 * 100).toFixed(1)}%</li>
         <li>⚡ ATR: ${atrM1.toFixed(5)}</li>
       `;
@@ -891,9 +735,7 @@ async function analisarMercado() {
     
     const criteriosElement = document.getElementById("criterios");
     if (criteriosElement) {
-      criteriosElement.innerHTML = `<li>ERRO: ${e.message}</li>
-                                   <li>Dados M1: ${state.dadosHistoricosM1?.length || 0}</li>
-                                   <li>Dados M5: ${state.dadosHistoricosM5?.length || 0}</li>`;
+      criteriosElement.innerHTML = `<li>ERRO: ${e.message}</li>`;
     }
     
     if (++state.tentativasErro > 3) setTimeout(() => location.reload(), 10000);
@@ -903,7 +745,7 @@ async function analisarMercado() {
 }
 
 // =============================================
-// FUNÇÕES DE DADOS (TWELVE DATA API)
+// FUNÇÕES DE DADOS (TWELVE DATA API REAL)
 // =============================================
 async function obterDadosTwelveData(interval = "1min") {
   try {
@@ -938,7 +780,7 @@ async function obterDadosTwelveData(interval = "1min") {
       high: parseFloat(item.high),
       low: parseFloat(item.low),
       close: parseFloat(item.close),
-      volume: 1 // Forex não tem volume confiável
+      volume: 1
     }));
   } catch (e) {
     console.error("Erro ao obter dados:", e);
@@ -1026,13 +868,13 @@ function iniciarAplicativo() {
         </div>
         
         <div style="background: #3a3b4a; padding: 15px; border-radius: 8px; text-align: center;">
-          <div style="font-size: 14px; opacity: 0.8; margin-bottom: 8px;">IA Neural</div>
-          <div id="neural">--</div>
+          <div style="font-size: 14px; opacity: 0.8; margin-bottom: 8px;">Entropia</div>
+          <div id="entropia">--</div>
         </div>
         
         <div style="background: #3a3b4a; padding: 15px; border-radius: 8px; text-align: center;">
-          <div style="font-size: 14px; opacity: 0.8; margin-bottom: 8px;">Sentimento</div>
-          <div id="sentimento">--</div>
+          <div style="font-size: 14px; opacity: 0.8; margin-bottom: 8px;">Volatilidade</div>
+          <div id="atr">--</div>
         </div>
       </div>
       
@@ -1050,7 +892,7 @@ function iniciarAplicativo() {
     </div>
     
     <div style="text-align: center; font-size: 14px; opacity: 0.7; padding-top: 15px; border-top: 1px solid #3a3b4a;">
-      Sistema de Trading 2025 | Confirmação M1+M5 | Atualizado: <span id="ultima-atualizacao">${new Date().toLocaleTimeString()}</span>
+      Sistema de Trading 2025 | Dados em tempo real | Atualizado: ${new Date().toLocaleTimeString()}
     </div>
   `;
   document.body.appendChild(container);
