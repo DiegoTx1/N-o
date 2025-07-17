@@ -1,5 +1,5 @@
 // =============================================
-// CONFIGURAÇÕES GLOBAIS (ESTRATÉGIA 2025)
+// CONFIGURAÇÕES GLOBAIS (ESTRATÉGIA 2025 OTIMIZADA)
 // =============================================
 const state = {
   ultimos: [],
@@ -35,7 +35,7 @@ const CONFIG = {
     EMA_CURTA: 8,
     EMA_MEDIA: 21,
     EMA_LONGA: 50,
-    EMA_LONGA2: 200,  // Adicionada EMA de 200 períodos
+    EMA_LONGA2: 200,
     MACD_RAPIDA: 12,
     MACD_LENTA: 26,
     MACD_SINAL: 9,
@@ -81,51 +81,48 @@ let currentKeyIndex = 0;
 let errorCount = 0;
 
 // =============================================
-// SISTEMA DE TENDÊNCIA AVANÇADO 2025 (ATUALIZADO)
+// SISTEMA DE TENDÊNCIA AVANÇADO 2025 (OTIMIZADO)
 // =============================================
 function avaliarTendencia(ema8, ema21, ema50, ema200, close, adx, atr) {
   // Verificar o alinhamento das médias
   const alinhamentoAlta = ema8 > ema21 && ema21 > ema50 && ema50 > ema200;
   const alinhamentoBaixa = ema8 < ema21 && ema21 < ema50 && ema50 < ema200;
 
-  // Verificar a posição do preço em relação às médias
-  const acimaEMAs = close > ema8 && close > ema21 && close > ema50 && close > ema200;
-  const abaixoEMAs = close < ema8 && close < ema21 && close < ema50 && close < ema200;
+  // Calcular distância percentual entre EMAs
+  const distanciaAlta = alinhamentoAlta 
+    ? ((ema8 - ema21) / ema21 + (ema21 - ema50) / ema50 + (ema50 - ema200) / ema200) / 3 * 100
+    : 0;
+  
+  const distanciaBaixa = alinhamentoBaixa 
+    ? ((ema21 - ema8) / ema8 + (ema50 - ema21) / ema21 + (ema200 - ema50) / ema50) / 3 * 100
+    : 0;
 
-  // Força da tendência baseada no ADX e no ATR
+  // Força da tendência baseada no ADX, ATR e distância entre EMAs
   const forcaADX = adx > CONFIG.LIMIARES.ADX_TENDENCIA ? adx : 0;
   const forcaATR = atr > CONFIG.LIMIARES.ATR_LIMIAR ? (atr / CONFIG.LIMIARES.ATR_LIMIAR) * 25 : 0;
-  const forcaTendencia = Math.min(100, forcaADX + forcaATR);
+  const forcaDistancia = Math.max(distanciaAlta, distanciaBaixa) * 0.8;
+  
+  const forcaTendencia = Math.min(100, forcaADX + forcaATR + forcaDistancia);
 
   // Classificação da tendência
-  if (alinhamentoAlta && acimaEMAs && forcaTendencia > 60) {
+  if (alinhamentoAlta && close > ema200 && forcaTendencia > 60) {
     return { tendencia: "FORTE_ALTA", forca: forcaTendencia };
-  } else if (alinhamentoBaixa && abaixoEMAs && forcaTendencia > 60) {
+  } else if (alinhamentoBaixa && close < ema200 && forcaTendencia > 60) {
     return { tendencia: "FORTE_BAIXA", forca: forcaTendencia };
-  } else if (alinhamentoAlta && acimaEMAs) {
+  } else if (ema8 > ema21 && ema21 > ema50 && close > ema50) {
     return { tendencia: "ALTA", forca: forcaTendencia };
-  } else if (alinhamentoBaixa && abaixoEMAs) {
+  } else if (ema8 < ema21 && ema21 < ema50 && close < ema50) {
     return { tendencia: "BAIXA", forca: forcaTendencia };
-  }
-
-  // Tendência de curto prazo (sem alinhamento de longo prazo)
-  const diffCurta = ema8 - ema21;
-  const forcaCurta = Math.min(100, Math.abs(diffCurta) / (atr * 10) * 100);
-
-  if (diffCurta > 0 && forcaCurta > 50) {
-    return { tendencia: "ALTA_CURTO", forca: forcaCurta };
-  } else if (diffCurta < 0 && forcaCurta > 50) {
-    return { tendencia: "BAIXA_CURTO", forca: forcaCurta };
   }
 
   return { tendencia: "NEUTRA", forca: 0 };
 }
 
 // =============================================
-// INDICADORES QUÂNTICOS 2025
+// INDICADORES QUÂNTICOS 2025 (OTIMIZADOS)
 // =============================================
 
-// 1. OSCILADOR DE ENTROPIA DE MERCADO
+// 1. OSCILADOR DE ENTROPIA DE MERCADO (MELHORADO)
 function calcularEntropiaMercado(dados, periodo = CONFIG.PERIODOS.ENTROPIA) {
   try {
     if (dados.length < periodo * 2) return 0.5;
@@ -145,7 +142,9 @@ function calcularEntropiaMercado(dados, periodo = CONFIG.PERIODOS.ENTROPIA) {
       entropias.push(entropia);
     }
     
-    // Normalizar entre 0-1
+    // Normalização robusta
+    if (entropias.length < 2) return 0.5;
+    
     const maxEntropia = Math.max(...entropias);
     const minEntropia = Math.min(...entropias);
     const range = maxEntropia - minEntropia;
@@ -160,10 +159,10 @@ function calcularEntropiaMercado(dados, periodo = CONFIG.PERIODOS.ENTROPIA) {
 }
 
 // =============================================
-// SISTEMA DE CONFIRMAÇÃO MULTI TIMEFRAME
+// SISTEMA DE CONFIRMAÇÃO MULTI TIMEFRAME (REVISTO)
 // =============================================
 function confirmarSinalMultiTimeframe(sinalM1, indicadoresM1, indicadoresM5) {
-  // Filtro 1: Tendência
+  // Filtro 1: Tendência consistente
   const tendenciaAlinhada = 
     (sinalM1 === "CALL" && 
      (indicadoresM5.tendencia.tendencia.includes("ALTA") || 
@@ -172,7 +171,7 @@ function confirmarSinalMultiTimeframe(sinalM1, indicadoresM1, indicadoresM5) {
      (indicadoresM5.tendencia.tendencia.includes("BAIXA") || 
       indicadoresM1.tendencia.tendencia.includes("BAIXA")));
   
-  // Filtro 2: SuperTrend
+  // Filtro 2: SuperTrend convergente
   const superTrendAlinhado = 
     (sinalM1 === "CALL" && 
      indicadoresM1.superTrend.direcao > 0 && 
@@ -181,43 +180,53 @@ function confirmarSinalMultiTimeframe(sinalM1, indicadoresM1, indicadoresM5) {
      indicadoresM1.superTrend.direcao < 0 && 
      indicadoresM5.superTrend.direcao < 0);
   
+  // Filtro 3: ADX acima do limiar em ambos timeframes
+  const adxConfirmado = 
+    indicadoresM1.adx > CONFIG.LIMIARES.ADX_TENDENCIA && 
+    indicadoresM5.adx > CONFIG.LIMIARES.ADX_TENDENCIA;
+  
   // Requer pelo menos 2 confirmações
   const confirmacoes = [
     tendenciaAlinhada,
-    superTrendAlinhado
+    superTrendAlinhado,
+    adxConfirmado
   ].filter(Boolean).length;
   
   return confirmacoes >= 2;
 }
 
 // =============================================
-// GERADOR DE SINAIS 2025 (M1 + M5)
+// GERADOR DE SINAIS 2025 (M1 + M5) - OTIMIZADO
 // =============================================
 async function gerarSinalAvancado(indicadoresM1, indicadoresM5) {
   // 1. Sinal primário no M1
   let sinalM1 = "ESPERAR";
   const { rsi, stoch, close, bollinger, adx } = indicadoresM1;
   
-  // Estratégia Bollinger Reversão
+  // Estratégia Bollinger Reversão com confirmação de EMA
   if (close < bollinger.inferior && 
       rsi < CONFIG.LIMIARES.RSI_OVERSOLD && 
-      stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD) {
+      stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD &&
+      close < indicadoresM1.emaCurta) {
     sinalM1 = "CALL";
   } else if (close > bollinger.superior && 
              rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT && 
-             stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT) {
+             stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT &&
+             close > indicadoresM1.emaCurta) {
     sinalM1 = "PUT";
   }
   
-  // Estratégia Trend Following
+  // Estratégia Trend Following com filtro ADX
   if (adx > CONFIG.LIMIARES.ADX_TENDENCIA) {
     if (indicadoresM1.tendencia.tendencia.includes("ALTA") && 
         close > indicadoresM1.emaCurta && 
-        close > bollinger.media) {
+        close > bollinger.media &&
+        close > indicadoresM1.emaMedia) {
       sinalM1 = "CALL";
     } else if (indicadoresM1.tendencia.tendencia.includes("BAIXA") && 
                close < indicadoresM1.emaCurta && 
-               close < bollinger.media) {
+               close < bollinger.media &&
+               close < indicadoresM1.emaMedia) {
       sinalM1 = "PUT";
     }
   }
@@ -238,44 +247,52 @@ async function gerarSinalAvancado(indicadoresM1, indicadoresM5) {
     sinalM1 = "ESPERAR";
   }
   
+  // 4. Filtro de volatilidade (ATR)
+  if (indicadoresM1.atr < CONFIG.LIMIARES.ATR_LIMIAR * 0.7) {
+    sinalM1 = "ESPERAR";
+  }
+  
   return sinalM1;
 }
 
 // =============================================
-// CALCULADOR DE CONFIANÇA 2025 (ATUALIZADO)
+// CALCULADOR DE CONFIANÇA 2025 (PRECISÃO MELHORADA)
 // =============================================
 function calcularScore(sinal, indicadoresM1) {
   if (sinal === "ESPERAR") return 0;
   
   const fatores = {
-    tendencia: indicadoresM1.tendencia.forca * 0.25,
+    tendencia: indicadoresM1.tendencia.forca * 0.3,
     rsi: sinal === "CALL" 
       ? Math.max(0, (CONFIG.LIMIARES.RSI_OVERSOLD - indicadoresM1.rsi) / 10)
       : Math.max(0, (indicadoresM1.rsi - CONFIG.LIMIARES.RSI_OVERBOUGHT) / 10),
     bollinger: sinal === "CALL"
       ? (indicadoresM1.bollinger.media - indicadoresM1.close) / 
-        (indicadoresM1.bollinger.media - indicadoresM1.bollinger.inferior) * 20
+        (indicadoresM1.bollinger.media - indicadoresM1.bollinger.inferior) * 25
       : (indicadoresM1.close - indicadoresM1.bollinger.media) / 
-        (indicadoresM1.bollinger.superior - indicadoresM1.bollinger.media) * 20,
-    adx: Math.min(30, indicadoresM1.adx * 0.3),
-    entropia: Math.min(30, (1 - indicadoresM1.entropia) * 15)
+        (indicadoresM1.bollinger.superior - indicadoresM1.bollinger.media) * 25,
+    adx: Math.min(30, indicadoresM1.adx * 0.4),
+    entropia: Math.min(20, (1 - indicadoresM1.entropia) * 20),
+    emaAlinhamento: indicadoresM1.tendencia.tendencia.includes("FORTE") ? 15 : 0
   };
   
   // Cálculo do score
   let score = 40; // Base
   score += fatores.tendencia + fatores.rsi + fatores.bollinger + 
-           fatores.adx + fatores.entropia;
+           fatores.adx + fatores.entropia + fatores.emaAlinhamento;
   
-  // Bônus se a tendência for forte (FORTE_ALTA ou FORTE_BAIXA)
-  if (indicadoresM1.tendencia.tendencia.includes("FORTE")) {
-    score += 15;
-  }
+  // Penalização se divergência de indicadores
+  const divergencia = 
+    (sinal === "CALL" && indicadoresM1.stoch.k < 50) ||
+    (sinal === "PUT" && indicadoresM1.stoch.k > 50);
+  
+  if (divergencia) score = Math.max(0, score - 20);
   
   return Math.min(100, Math.max(0, Math.round(score)));
 }
 
 // =============================================
-// FUNÇÕES UTILITÁRIAS
+// FUNÇÕES UTILITÁRIAS (MANTIDAS)
 // =============================================
 function formatarTimer(segundos) {
   return `0:${segundos.toString().padStart(2, '0')}`;
@@ -341,7 +358,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
 }
 
 // =============================================
-// INDICADORES TÉCNICOS (ATUALIZADOS 2025)
+// INDICADORES TÉCNICOS (OTIMIZADOS)
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -378,10 +395,10 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
     else losses -= diff;
   }
   
-  const avgGain = gains / periodo;
-  const avgLoss = losses / periodo;
+  const avgGain = gains / periodo || 1;
+  const avgLoss = losses / periodo || 1;
   
-  const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+  const rs = avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
 }
 
@@ -396,11 +413,6 @@ function calcularStochastic(highs, lows, closes,
       const startIndex = Math.max(0, i - periodoK + 1);
       const sliceHigh = highs.slice(startIndex, i + 1);
       const sliceLow = lows.slice(startIndex, i + 1);
-      
-      if (sliceHigh.length === 0 || sliceLow.length === 0) {
-        kValues.push(50);
-        continue;
-      }
       
       const highestHigh = Math.max(...sliceHigh);
       const lowestLow = Math.min(...sliceLow);
@@ -479,8 +491,10 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
   try {
     if (dados.length < periodo) return { direcao: 0, valor: 0 };
     
-    const superTrends = [];
     const atr = calcularATR(dados, periodo);
+    if (atr === 0) return { direcao: 0, valor: 0 };
+    
+    const superTrends = [];
     
     for (let i = periodo; i < dados.length; i++) {
       const hl2 = (dados[i].high + dados[i].low) / 2;
@@ -508,7 +522,7 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
       superTrends.push({ direcao, valor: superTrend });
     }
     
-    return superTrends[superTrends.length - 1];
+    return superTrends[superTrends.length - 1] || { direcao: 0, valor: 0 };
     
   } catch (e) {
     console.error("Erro no cálculo SuperTrend:", e);
@@ -568,7 +582,8 @@ function calcularADX(dados, periodo = CONFIG.PERIODOS.ADX) {
     // Calcular DX
     const dx = plusDI.map((pdi, i) => {
       const mdi = minusDI[i];
-      return (Math.abs(pdi - mdi) / (pdi + mdi)) * 100;
+      const sum = pdi + mdi;
+      return sum !== 0 ? (Math.abs(pdi - mdi) / sum * 100 : 0;
     });
     
     // Calcular ADX
@@ -607,7 +622,7 @@ function calcularBollingerBands(closes, periodo = CONFIG.PERIODOS.BOLLINGER, des
 }
 
 // =============================================
-// CORE DO SISTEMA (ESTRATÉGIA 2025) - ATUALIZADO
+// CORE DO SISTEMA (ESTRATÉGIA 2025) - OTIMIZADO
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
@@ -655,25 +670,26 @@ async function analisarMercado() {
     const ema8M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_CURTA).slice(-1)[0];
     const ema21M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_MEDIA).slice(-1)[0];
     const ema50M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_LONGA).slice(-1)[0];
-    const ema200M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_LONGA2).slice(-1)[0]; // Nova EMA200
+    const ema200M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_LONGA2).slice(-1)[0];
     
     const rsiM1 = calcularRSI(closesM1.slice(-100));
     const stochM1 = calcularStochastic(highsM1, lowsM1, closesM1);
     const atrM1 = calcularATR(dadosM1);
     const adxM1 = calcularADX(dadosM1);
-    const tendenciaM1 = avaliarTendencia(ema8M1, ema21M1, ema50M1, ema200M1, velaAtualM1.close, adxM1, atrM1); // Atualizada
+    const tendenciaM1 = avaliarTendencia(ema8M1, ema21M1, ema50M1, ema200M1, velaAtualM1.close, adxM1, atrM1);
     const superTrendM1 = calcularSuperTrend(dadosM1);
     const bollingerM1 = calcularBollingerBands(closesM1);
     const entropiaM1 = calcularEntropiaMercado(dadosM1);
+    const macdM1 = calcularMACD(closesM1);
     
     // Calcular indicadores para M5
     const ema8M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_CURTA).slice(-1)[0];
     const ema21M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_MEDIA).slice(-1)[0];
     const ema50M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_LONGA).slice(-1)[0];
-    const ema200M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_LONGA2).slice(-1)[0]; // Nova EMA200
+    const ema200M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_LONGA2).slice(-1)[0];
     const atrM5 = calcularATR(dadosM5);
-    const adxM5 = calcularADX(dadosM5); // Vamos calcular o ADX para M5 também
-    const tendenciaM5 = avaliarTendencia(ema8M5, ema21M5, ema50M5, ema200M5, velaAtualM5.close, adxM5, atrM5); // Atualizada
+    const adxM5 = calcularADX(dadosM5);
+    const tendenciaM5 = avaliarTendencia(ema8M5, ema21M5, ema50M5, ema200M5, velaAtualM5.close, adxM5, atrM5);
     const superTrendM5 = calcularSuperTrend(dadosM5);
 
     // Preparar dados para geração de sinal
@@ -683,19 +699,21 @@ async function analisarMercado() {
       emaCurta: ema8M1,
       emaMedia: ema21M1,
       emaLonga: ema50M1,
-      emaLonga2: ema200M1, // Incluída
+      emaLonga2: ema200M1,
       close: velaAtualM1.close,
       superTrend: superTrendM1,
       tendencia: tendenciaM1,
       atr: atrM1,
       adx: adxM1,
       bollinger: bollingerM1,
-      entropia: entropiaM1
+      entropia: entropiaM1,
+      macd: macdM1
     };
 
     const indicadoresM5 = {
       tendencia: tendenciaM5,
-      superTrend: superTrendM5
+      superTrend: superTrendM5,
+      adx: adxM5
     };
 
     // Armazenar para uso na interface
@@ -708,9 +726,10 @@ async function analisarMercado() {
     let sinal = await gerarSinalAvancado(indicadoresM1, indicadoresM5);
     const score = calcularScore(sinal, indicadoresM1);
 
-    // Cooldown adaptativo
-    if (sinal !== "ESPERAR" && state.cooldown <= 0 && score > CONFIG.LIMIARES.SCORE_MEDIO) {
-      state.cooldown = (score > CONFIG.LIMIARES.SCORE_ALTO) ? 4 : 3;
+    // Cooldown adaptativo baseado na confiança
+    if (sinal !== "ESPERAR" && state.cooldown <= 0) {
+      state.cooldown = score > CONFIG.LIMIARES.SCORE_ALTO ? 3 : 
+                      score > CONFIG.LIMIARES.SCORE_MEDIO ? 4 : 0;
     } 
     
     if (state.cooldown > 0) {
@@ -737,6 +756,7 @@ async function analisarMercado() {
         <li>📏 ADX: ${adxM1.toFixed(2)} ${adxM1 > 25 ? '📈' : ''}</li>
         <li>🌀 Entropia: ${(entropiaM1 * 100).toFixed(1)}%</li>
         <li>⚡ ATR: ${atrM1.toFixed(5)}</li>
+        <li>📊 MACD: ${macdM1.histograma.toFixed(6)}</li>
       `;
     }
 
