@@ -35,6 +35,7 @@ const CONFIG = {
     EMA_CURTA: 8,
     EMA_MEDIA: 21,
     EMA_LONGA: 50,
+    EMA_LONGA2: 200,  // Adicionada EMA de 200 períodos
     MACD_RAPIDA: 12,
     MACD_LENTA: 26,
     MACD_SINAL: 9,
@@ -80,36 +81,43 @@ let currentKeyIndex = 0;
 let errorCount = 0;
 
 // =============================================
-// SISTEMA DE TENDÊNCIA AVANÇADO 2025
+// SISTEMA DE TENDÊNCIA AVANÇADO 2025 (ATUALIZADO)
 // =============================================
-function avaliarTendencia(ema8, ema21, ema50, close, atr) {
+function avaliarTendencia(ema8, ema21, ema50, ema200, close, adx, atr) {
+  // Verificar o alinhamento das médias
+  const alinhamentoAlta = ema8 > ema21 && ema21 > ema50 && ema50 > ema200;
+  const alinhamentoBaixa = ema8 < ema21 && ema21 < ema50 && ema50 < ema200;
+
+  // Verificar a posição do preço em relação às médias
+  const acimaEMAs = close > ema8 && close > ema21 && close > ema50 && close > ema200;
+  const abaixoEMAs = close < ema8 && close < ema21 && close < ema50 && close < ema200;
+
+  // Força da tendência baseada no ADX e no ATR
+  const forcaADX = adx > CONFIG.LIMIARES.ADX_TENDENCIA ? adx : 0;
+  const forcaATR = atr > CONFIG.LIMIARES.ATR_LIMIAR ? (atr / CONFIG.LIMIARES.ATR_LIMIAR) * 25 : 0;
+  const forcaTendencia = Math.min(100, forcaADX + forcaATR);
+
+  // Classificação da tendência
+  if (alinhamentoAlta && acimaEMAs && forcaTendencia > 60) {
+    return { tendencia: "FORTE_ALTA", forca: forcaTendencia };
+  } else if (alinhamentoBaixa && abaixoEMAs && forcaTendencia > 60) {
+    return { tendencia: "FORTE_BAIXA", forca: forcaTendencia };
+  } else if (alinhamentoAlta && acimaEMAs) {
+    return { tendencia: "ALTA", forca: forcaTendencia };
+  } else if (alinhamentoBaixa && abaixoEMAs) {
+    return { tendencia: "BAIXA", forca: forcaTendencia };
+  }
+
+  // Tendência de curto prazo (sem alinhamento de longo prazo)
   const diffCurta = ema8 - ema21;
-  const diffLonga = close - ema50;
-  
-  // Fator de convergência ponderado
   const forcaCurta = Math.min(100, Math.abs(diffCurta) / (atr * 10) * 100);
-  const forcaLonga = Math.min(100, Math.abs(diffLonga) / (atr * 5) * 100);
-  
-  // Tendência hierárquica com peso maior para longo prazo
-  if (forcaLonga > 60) {
-    return diffLonga > 0 
-      ? { tendencia: "TENDÊNCIA_ALTA", forca: forcaLonga }
-      : { tendencia: "TENDÊNCIA_BAIXA", forca: forcaLonga };
+
+  if (diffCurta > 0 && forcaCurta > 50) {
+    return { tendencia: "ALTA_CURTO", forca: forcaCurta };
+  } else if (diffCurta < 0 && forcaCurta > 50) {
+    return { tendencia: "BAIXA_CURTO", forca: forcaCurta };
   }
-  
-  // Tendência de curto prazo
-  if (forcaCurta > 70) {
-    return diffCurta > 0 
-      ? { tendencia: "FORTE_ALTA", forca: forcaCurta }
-      : { tendencia: "FORTE_BAIXA", forca: forcaCurta };
-  }
-  
-  if (forcaCurta > 45) {
-    return diffCurta > 0 
-      ? { tendencia: "ALTA", forca: forcaCurta } 
-      : { tendencia: "BAIXA", forca: forcaCurta };
-  }
-  
+
   return { tendencia: "NEUTRA", forca: 0 };
 }
 
@@ -234,7 +242,7 @@ async function gerarSinalAvancado(indicadoresM1, indicadoresM5) {
 }
 
 // =============================================
-// CALCULADOR DE CONFIANÇA 2025
+// CALCULADOR DE CONFIANÇA 2025 (ATUALIZADO)
 // =============================================
 function calcularScore(sinal, indicadoresM1) {
   if (sinal === "ESPERAR") return 0;
@@ -257,6 +265,11 @@ function calcularScore(sinal, indicadoresM1) {
   let score = 40; // Base
   score += fatores.tendencia + fatores.rsi + fatores.bollinger + 
            fatores.adx + fatores.entropia;
+  
+  // Bônus se a tendência for forte (FORTE_ALTA ou FORTE_BAIXA)
+  if (indicadoresM1.tendencia.tendencia.includes("FORTE")) {
+    score += 15;
+  }
   
   return Math.min(100, Math.max(0, Math.round(score)));
 }
@@ -594,7 +607,7 @@ function calcularBollingerBands(closes, periodo = CONFIG.PERIODOS.BOLLINGER, des
 }
 
 // =============================================
-// CORE DO SISTEMA (ESTRATÉGIA 2025)
+// CORE DO SISTEMA (ESTRATÉGIA 2025) - ATUALIZADO
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
@@ -639,25 +652,28 @@ async function analisarMercado() {
     const lowsM5 = dadosM5.map(v => v.low);
 
     // Calcular indicadores para M1
-    const ema8M1 = calcularMedia.exponencial(closesM1, 8).slice(-1)[0];
-    const ema21M1 = calcularMedia.exponencial(closesM1, 21).slice(-1)[0];
-    const ema50M1 = calcularMedia.exponencial(closesM1, 50).slice(-1)[0];
+    const ema8M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_CURTA).slice(-1)[0];
+    const ema21M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_MEDIA).slice(-1)[0];
+    const ema50M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_LONGA).slice(-1)[0];
+    const ema200M1 = calcularMedia.exponencial(closesM1, CONFIG.PERIODOS.EMA_LONGA2).slice(-1)[0]; // Nova EMA200
     
     const rsiM1 = calcularRSI(closesM1.slice(-100));
     const stochM1 = calcularStochastic(highsM1, lowsM1, closesM1);
     const atrM1 = calcularATR(dadosM1);
-    const tendenciaM1 = avaliarTendencia(ema8M1, ema21M1, ema50M1, velaAtualM1.close, atrM1);
-    const superTrendM1 = calcularSuperTrend(dadosM1);
     const adxM1 = calcularADX(dadosM1);
+    const tendenciaM1 = avaliarTendencia(ema8M1, ema21M1, ema50M1, ema200M1, velaAtualM1.close, adxM1, atrM1); // Atualizada
+    const superTrendM1 = calcularSuperTrend(dadosM1);
     const bollingerM1 = calcularBollingerBands(closesM1);
     const entropiaM1 = calcularEntropiaMercado(dadosM1);
     
     // Calcular indicadores para M5
-    const ema8M5 = calcularMedia.exponencial(closesM5, 8).slice(-1)[0];
-    const ema21M5 = calcularMedia.exponencial(closesM5, 21).slice(-1)[0];
-    const ema50M5 = calcularMedia.exponencial(closesM5, 50).slice(-1)[0];
+    const ema8M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_CURTA).slice(-1)[0];
+    const ema21M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_MEDIA).slice(-1)[0];
+    const ema50M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_LONGA).slice(-1)[0];
+    const ema200M5 = calcularMedia.exponencial(closesM5, CONFIG.PERIODOS.EMA_LONGA2).slice(-1)[0]; // Nova EMA200
     const atrM5 = calcularATR(dadosM5);
-    const tendenciaM5 = avaliarTendencia(ema8M5, ema21M5, ema50M5, velaAtualM5.close, atrM5);
+    const adxM5 = calcularADX(dadosM5); // Vamos calcular o ADX para M5 também
+    const tendenciaM5 = avaliarTendencia(ema8M5, ema21M5, ema50M5, ema200M5, velaAtualM5.close, adxM5, atrM5); // Atualizada
     const superTrendM5 = calcularSuperTrend(dadosM5);
 
     // Preparar dados para geração de sinal
@@ -667,6 +683,7 @@ async function analisarMercado() {
       emaCurta: ema8M1,
       emaMedia: ema21M1,
       emaLonga: ema50M1,
+      emaLonga2: ema200M1, // Incluída
       close: velaAtualM1.close,
       superTrend: superTrendM1,
       tendencia: tendenciaM1,
@@ -714,7 +731,7 @@ async function analisarMercado() {
         <li>💰 Preço: ${indicadoresM1.close.toFixed(5)}</li>
         <li>📉 RSI: ${rsiM1.toFixed(2)} ${rsiM1 < 30 ? '🔻' : rsiM1 > 70 ? '🔺' : ''}</li>
         <li>📈 Stochastic: ${stochM1.k.toFixed(2)}/${stochM1.d.toFixed(2)}</li>
-        <li>📌 Médias: EMA8 ${ema8M1.toFixed(5)} | EMA21 ${ema21M1.toFixed(5)}</li>
+        <li>📌 Médias: EMA8 ${ema8M1.toFixed(5)} | EMA21 ${ema21M1.toFixed(5)} | EMA50 ${ema50M1.toFixed(5)} | EMA200 ${ema200M1.toFixed(5)}</li>
         <li>🎯 Bollinger: ${bollingerM1.inferior.toFixed(5)}-${bollingerM1.superior.toFixed(5)}</li>
         <li>🚦 SuperTrend: ${superTrendM1.direcao > 0 ? 'ALTA' : 'BAIXA'}</li>
         <li>📏 ADX: ${adxM1.toFixed(2)} ${adxM1 > 25 ? '📈' : ''}</li>
