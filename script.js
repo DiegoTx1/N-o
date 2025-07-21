@@ -64,8 +64,7 @@ const state = {
 
 const CONFIG = {
   API_ENDPOINTS: {
-    TWELVE_DATA: "https://api.twelvedata.com",
-    CRYPTO_PANIC: "https://api.cryptopanic.com/v1/posts"
+    TWELVE_DATA: "https://api.twelvedata.com"
   },
   PARES: {
     CRYPTO_IDX: "BTC/USD"
@@ -94,8 +93,8 @@ const CONFIG = {
   LIMIARES: {
     SCORE_ALTO: 85,
     SCORE_MEDIO: 70,
-    RSI_OVERBOUGHT: 78,
-    RSI_OVERSOLD: 22,
+    RSI_OVERBOUGHT: 75, // AJUSTADO: 78 -> 75
+    RSI_OVERSOLD: 25,   // AJUSTADO: 22 -> 25
     STOCH_OVERBOUGHT: 85,
     STOCH_OVERSOLD: 15,
     VARIACAO_LATERAL: 0.008,
@@ -119,8 +118,7 @@ const CONFIG = {
   AI: {
     PROB_ACERTO_ALVO: 75,
     NIVEL_RISCO_MAX: 4
-  },
-  CRYPTO_PANIC_AUTH: "" // Adicione seu token aqui
+  }
 };
 
 // =============================================
@@ -603,8 +601,8 @@ function validarSinal(sinal, indicadores) {
     confirmacoes.push(indicadores.close < (indicadores.bandasBollinger.medio - bandaRange * 0.1));
   }
   
-  // Exigir 80% de confirmações
-  return confirmacoes.filter(Boolean).length >= confirmacoes.length * 0.8;
+  // Exigir 60% de confirmações (AJUSTADO: 80% -> 60%)
+  return confirmacoes.filter(Boolean).length >= confirmacoes.length * 0.6;
 }
 
 function verificarTransicao() {
@@ -641,26 +639,13 @@ function atualizarVolatilidade(atrAtual, close) {
     CONFIG.LIMIARES.RSI_OVERBOUGHT = 82;
     CONFIG.LIMIARES.RSI_OVERSOLD = 18;
   } else {
-    CONFIG.LIMIARES.RSI_OVERBOUGHT = 78;
-    CONFIG.LIMIARES.RSI_OVERSOLD = 22;
+    // AJUSTE: Limiares padrão mais sensíveis
+    CONFIG.LIMIARES.RSI_OVERBOUGHT = 75;
+    CONFIG.LIMIARES.RSI_OVERSOLD = 25;
   }
 }
 
-async function verificarEventosMercado() {
-  try {
-    const url = `${CONFIG.API_ENDPOINTS.CRYPTO_PANIC}?auth_token=${CONFIG.CRYPTO_PANIC_AUTH}&currencies=BTC`;
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    return data.results.filter(evento => 
-      evento.votes.important > 50 || 
-      evento.title.match(/fed|regulation|ban|hack|war|election|ftx/i)
-    ).slice(0, 3);
-  } catch (e) {
-    console.error("Erro ao buscar eventos:", e);
-    return [];
-  }
-}
+// REMOVIDO: verificarEventosMercado()
 
 function calcularInsightsIA() {
   // 1. Calcular nível de risco
@@ -670,7 +655,6 @@ function calcularInsightsIA() {
   
   if (volatilidade > CONFIG.LIMIARES.VOLATILIDADE_ALTA) risco += 2;
   if (state.contadorLaterais > CONFIG.LIMIARES.LATERALIDADE_PROLONGADA) risco += 1;
-  if (state.ultimosEventos.length > 0) risco += 3;
   if (state.cooldown > 0) risco += 1;
   
   state.iaNivelRisco = Math.min(5, risco);
@@ -729,8 +713,8 @@ function gerarSinal(indicadores, divergencias, lateral) {
     return "ESPERAR";
   }
 
-  // 1. Tendência forte com volume
-  if (tendencia.forca > 80 && volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) {
+  // 1. Tendência forte com volume (AJUSTADO: volume > 1.2)
+  if (tendencia.forca > 70 && volumeRelativo > 1.2) {
     if (tendencia.tendencia === "FORTE_ALTA" && close > vwap && close > bandasBollinger.medio) {
       return "CALL";
     }
@@ -739,14 +723,14 @@ function gerarSinal(indicadores, divergencias, lateral) {
     }
   }
 
-  // 2. Breakout com volume e Bollinger
+  // 2. Breakout com volume e Bollinger (AJUSTADO: volume > 1.2)
   const limiteBreakout = (bandasBollinger.superior - bandasBollinger.inferior) * 0.1;
   
-  if (close > (bandasBollinger.superior + limiteBreakout) && volumeRelativo > 1.8) {
+  if (close > (bandasBollinger.superior + limiteBreakout) && volumeRelativo > 1.2) {
     return "CALL";
   }
   
-  if (close < (bandasBollinger.inferior - limiteBreakout) && volumeRelativo > 1.8) {
+  if (close < (bandasBollinger.inferior - limiteBreakout) && volumeRelativo > 1.2) {
     return "PUT";
   }
 
@@ -814,11 +798,8 @@ async function analisarMercado() {
   state.leituraEmAndamento = true;
   
   try {
-    // Verificar eventos de mercado
-    state.ultimosEventos = await verificarEventosMercado();
-    if (state.ultimosEventos.length > 0) {
-      state.cooldown = 5;
-    }
+    // REMOVIDO: Verificação de eventos de mercado
+    state.ultimosEventos = [];
     
     const dados = await obterDadosTwelveData();
     state.dadosHistoricos = dados;
@@ -894,7 +875,7 @@ async function analisarMercado() {
       // Verificar se está em período de transição
       if (verificarTransicao()) {
         sinal = "ESPERAR";
-        state.cooldown = 2;
+        state.cooldown = 2; // AJUSTADO: 5 -> 2
       }
       // Validar sinal em múltiplas camadas
       else if (!validarSinal(sinal, indicadores)) {
@@ -902,9 +883,9 @@ async function analisarMercado() {
       }
     }
     
-    // Aplicar cooldown
+    // Aplicar cooldown (AJUSTADO: 3 -> 1)
     if (sinal !== "ESPERAR" && state.cooldown <= 0) {
-      state.cooldown = 3;
+      state.cooldown = 1;
     } else if (state.cooldown > 0) {
       state.cooldown--;
       sinal = "ESPERAR";
