@@ -3,65 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>TX1 👨🏽‍💻💹</title>
-  <style>
-    .container {
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 20px;
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: #1e1f29;
-      border-radius: 15px;
-      color: #f5f6fa;
-    }
-    
-    h1 {
-      text-align: center;
-      color: #6c5ce7;
-    }
-    
-    .painel-central {
-      display: flex;
-      gap: 20px;
-      margin-bottom: 20px;
-    }
-    
-    .coluna-esquerda, .coluna-direita {
-      flex: 1;
-      padding: 15px;
-      background: #2c2d3a;
-      border-radius: 10px;
-    }
-    
-    #comando {
-      font-weight: bold;
-      font-size: 1.2em;
-      padding: 5px 10px;
-      border-radius: 5px;
-    }
-    
-    .esperar { background-color: #0984e3; }
-    .call { background-color: #00b894; }
-    .put { background-color: #ff7675; }
-    
-    button {
-      padding: 8px 15px;
-      margin-right: 10px;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    
-    #criterios, #ultimos {
-      max-height: 300px;
-      overflow-y: auto;
-    }
-    
-    .grafico {
-      margin-top: 20px;
-      border-radius: 10px;
-      overflow: hidden;
-    }
-  </style>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div class="container">
@@ -87,14 +29,9 @@
         <ul id="ultimos"></ul>
       </div>
     </div>
-    <!-- Alterado para BTC/USD -->
-    <iframe class="grafico" 
-            src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=1&theme=dark"
-            width="100%" 
-            height="350" 
-            frameborder="0"></iframe>
+    <iframe class="grafico" src="https://s.tradingview.com/widgetembed/?symbol=FX:EURUSD&interval=1&theme=dark"
+      width="100%" height="350" frameborder="0"></iframe>
   </div>
-  
   <audio id="som-call" src="https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg" preload="auto"></audio>
   <audio id="som-put" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg" preload="auto"></audio>
   <script src="script.js"></script>
