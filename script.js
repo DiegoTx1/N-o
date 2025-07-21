@@ -1203,7 +1203,6 @@ else document.addEventListener("DOMContentLoaded", iniciarAplicativo);
 // INICIALIZAÇÃO DE VARIÁVEIS GLOBAIS
 // =============================================
 const API_KEYS = [
-  "9cf795b2a4f14d43a049ca935d174ebb",
   "0105e6681b894e0185704171c53f5075"
 ];
 let currentKeyIndex = 0;
