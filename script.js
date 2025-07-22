@@ -32,7 +32,8 @@ const state = {
   superTrendCache: [],
   atrGlobal: 0,
   rsiHistory: [],
-  cooldown: 0
+  cooldown: 0,
+  interfaceUpdatePending: false
 };
 
 const CONFIG = {
@@ -40,7 +41,7 @@ const CONFIG = {
     TWELVE_DATA: "https://api.twelvedata.com"
   },
   PARES: {
-    CRYPTO_IDX: "BTC/USD"  // Usando BTC como proxy para índice cripto
+    CRYPTO_IDX: "BTC/USD"
   },
   PERIODOS: {
     RSI: 9,
@@ -62,12 +63,12 @@ const CONFIG = {
   LIMIARES: {
     SCORE_ALTO: 85,
     SCORE_MEDIO: 70,
-    RSI_OVERBOUGHT: 75,    // Mais sensível para cripto
-    RSI_OVERSOLD: 25,      // Mais sensível para cripto
+    RSI_OVERBOUGHT: 75,
+    RSI_OVERSOLD: 25,
     STOCH_OVERBOUGHT: 85,
     STOCH_OVERSOLD: 15,
-    VARIACAO_LATERAL: 0.005,  // Aumentado para cripto
-    ATR_LIMIAR: 0.015,        // Aumentado para volatilidade cripto
+    VARIACAO_LATERAL: 0.005,
+    ATR_LIMIAR: 0.015,
     LATERALIDADE_LIMIAR: 0.005
   },
   PESOS: {
@@ -173,7 +174,7 @@ function gerarSinal(indicadores, divergencias, lateral) {
 
   // Breakout em criptomoedas
   const variacao = state.resistenciaKey - state.suporteKey;
-  const limiteBreakout = variacao * 0.05;  // Mais sensível para cripto
+  const limiteBreakout = variacao * 0.05;
   
   if (close > (state.resistenciaKey + limiteBreakout)) {
     return "CALL";
@@ -183,7 +184,7 @@ function gerarSinal(indicadores, divergencias, lateral) {
     return "PUT";
   }
   
-  // Divergências em RSI (muito importantes em cripto)
+  // Divergências em RSI
   if (divergencias.divergenciaRSI) {
     if (divergencias.tipoDivergencia === "ALTA" && close > state.suporteKey) {
       return "CALL";
@@ -220,7 +221,7 @@ function calcularScore(sinal, indicadores, divergencias) {
                   sinal === "PUT" && indicadores.close < indicadores.emaMedia ? 15 : 0,
     superTrend: sinal === "CALL" && indicadores.close > indicadores.superTrend.valor ? 10 :
                 sinal === "PUT" && indicadores.close < indicadores.superTrend.valor ? 10 : 0,
-    volatilidade: (indicadores.atr / indicadores.close) > 0.02 ? 10 : 0  // Bônus para alta volatilidade
+    volatilidade: (indicadores.atr / indicadores.close) > 0.02 ? 10 : 0
   };
   
   score += Object.values(fatores).reduce((sum, val) => sum + val, 0);
@@ -250,32 +251,58 @@ function atualizarRelogio() {
 }
 
 function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
-  if (!state.marketOpen) return;
+  if (!state.marketOpen || state.interfaceUpdatePending) return;
   
-  const comandoElement = document.getElementById("comando");
-  if (comandoElement) {
-    comandoElement.textContent = sinal;
-    comandoElement.className = sinal.toLowerCase();
+  state.interfaceUpdatePending = true;
+  requestAnimationFrame(() => {
+    const comandoElement = document.getElementById("comando");
+    if (comandoElement) {
+      comandoElement.textContent = sinal;
+      comandoElement.className = sinal.toLowerCase();
+      
+      if (sinal === "CALL") comandoElement.textContent += " 📈";
+      else if (sinal === "PUT") comandoElement.textContent += " 📉";
+      else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
+    }
     
-    if (sinal === "CALL") comandoElement.textContent += " 📈";
-    else if (sinal === "PUT") comandoElement.textContent += " 📉";
-    else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
-  }
-  
-  const scoreElement = document.getElementById("score");
-  if (scoreElement) {
-    scoreElement.textContent = `Confiança: ${score}%`;
-    if (score >= CONFIG.LIMIARES.SCORE_ALTO) scoreElement.style.color = '#00ff00';
-    else if (score >= CONFIG.LIMIARES.SCORE_MEDIO) scoreElement.style.color = '#ffff00';
-    else scoreElement.style.color = '#ff0000';
-  }
-  
-  const tendenciaElement = document.getElementById("tendencia");
-  const forcaElement = document.getElementById("forca-tendencia");
-  if (tendenciaElement && forcaElement) {
-    tendenciaElement.textContent = tendencia;
-    forcaElement.textContent = `${forcaTendencia}%`;
-  }
+    const scoreElement = document.getElementById("score");
+    if (scoreElement) {
+      scoreElement.textContent = `Confiança: ${score}%`;
+      if (score >= CONFIG.LIMIARES.SCORE_ALTO) scoreElement.style.color = '#00ff00';
+      else if (score >= CONFIG.LIMIARES.SCORE_MEDIO) scoreElement.style.color = '#ffff00';
+      else scoreElement.style.color = '#ff0000';
+    }
+    
+    const tendenciaElement = document.getElementById("tendencia");
+    const forcaElement = document.getElementById("forca-tendencia");
+    if (tendenciaElement && forcaElement) {
+      tendenciaElement.textContent = tendencia;
+      forcaElement.textContent = `${forcaTendencia}%`;
+    }
+    
+    state.interfaceUpdatePending = false;
+  });
+}
+
+// =============================================
+// FUNÇÕES DE CACHE
+// =============================================
+function resetarCaches() {
+  state.rsiCache = { avgGain: 0, avgLoss: 0, initialized: false };
+  state.macdCache = {
+    emaRapida: null,
+    emaLenta: null,
+    macdLine: [],
+    signalLine: []
+  };
+  state.superTrendCache = [];
+  state.atrGlobal = 0;
+  state.rsiHistory = [];
+}
+
+function adicionarCache(cache, valor, maxSize = 100) {
+  cache.push(valor);
+  if (cache.length > maxSize) cache.shift();
 }
 
 // =============================================
@@ -303,6 +330,16 @@ const calcularMedia = {
     return emaArray;
   }
 };
+
+function calcularEMA(dados, periodo) {
+  const k = 2 / (periodo + 1);
+  let ema = dados.slice(0, periodo).reduce((a, b) => a + b, 0) / periodo;
+  
+  for (let i = periodo; i < dados.length; i++) {
+    ema = dados[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
 
 function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   if (closes.length < periodo + 1) return 50;
@@ -344,23 +381,42 @@ function calcularStochastic(highs, lows, closes,
     if (closes.length < periodoK) return { k: 50, d: 50 };
     
     const kValues = [];
-    for (let i = periodoK - 1; i < closes.length; i++) {
-      const startIndex = Math.max(0, i - periodoK + 1);
-      const sliceHigh = highs.slice(startIndex, i + 1);
-      const sliceLow = lows.slice(startIndex, i + 1);
-      
-      if (sliceHigh.length === 0 || sliceLow.length === 0) {
-        kValues.push(50);
-        continue;
-      }
-      
-      const highestHigh = Math.max(...sliceHigh);
-      const lowestLow = Math.min(...sliceLow);
-      const range = highestHigh - lowestLow;
-      const k = range !== 0 ? ((closes[i] - lowestLow) / range) * 100 : 50;
-      kValues.push(k);
+    let highestHigh = -Infinity;
+    let lowestLow = Infinity;
+    
+    // Inicializar primeira janela
+    for (let i = 0; i < periodoK; i++) {
+      if (highs[i] > highestHigh) highestHigh = highs[i];
+      if (lows[i] < lowestLow) lowestLow = lows[i];
     }
     
+    // Calcular primeiro valor K
+    kValues[0] = ((closes[periodoK - 1] - lowestLow) / (highestHigh - lowestLow)) * 100 || 50;
+    
+    // Calcular valores K com janela deslizante
+    for (let i = periodoK; i < closes.length; i++) {
+      const leavingHigh = highs[i - periodoK];
+      const leavingLow = lows[i - periodoK];
+      const newHigh = highs[i];
+      const newLow = lows[i];
+      
+      // Atualizar extremos se necessário
+      if (newHigh > highestHigh) {
+        highestHigh = newHigh;
+      } else if (leavingHigh === highestHigh) {
+        highestHigh = Math.max(...highs.slice(i - periodoK + 1, i + 1));
+      }
+      
+      if (newLow < lowestLow) {
+        lowestLow = newLow;
+      } else if (leavingLow === lowestLow) {
+        lowestLow = Math.min(...lows.slice(i - periodoK + 1, i + 1));
+      }
+      
+      kValues[i - periodoK + 1] = ((closes[i] - lowestLow) / (highestHigh - lowestLow)) * 100 || 50;
+    }
+    
+    // Suavizar valores K
     const kSuavizado = [];
     for (let i = periodoD - 1; i < kValues.length; i++) {
       const startIndex = Math.max(0, i - periodoD + 1);
@@ -369,6 +425,7 @@ function calcularStochastic(highs, lows, closes,
       kSuavizado.push(mediaK);
     }
     
+    // Calcular valores D
     const dValues = [];
     for (let i = periodoD - 1; i < kSuavizado.length; i++) {
       const startIndex = Math.max(0, i - periodoD + 1);
@@ -404,8 +461,8 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
       state.macdCache = {
         emaRapida: emaRapida[emaRapida.length - 1],
         emaLenta: emaLenta[emaLenta.length - 1],
-        macdLine: macdLinha,
-        signalLine: sinalLinha
+        macdLine: macdLinha.slice(-100),
+        signalLine: sinalLinha.slice(-100)
       };
       
       return {
@@ -425,18 +482,18 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
     state.macdCache.emaLenta = novoValor * kLenta + state.macdCache.emaLenta * (1 - kLenta);
     
     const novaMacdLinha = state.macdCache.emaRapida - state.macdCache.emaLenta;
-    state.macdCache.macdLine.push(novaMacdLinha);
+    adicionarCache(state.macdCache.macdLine, novaMacdLinha, 100);
     
     if (state.macdCache.signalLine.length === 0) {
-      state.macdCache.signalLine.push(novaMacdLinha);
+      adicionarCache(state.macdCache.signalLine, novaMacdLinha, 100);
     } else {
       const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
       const novoSignal = novaMacdLinha * kSinal + ultimoSinal * (1 - kSinal);
-      state.macdCache.signalLine.push(novoSignal);
+      adicionarCache(state.macdCache.signalLine, novoSignal, 100);
     }
     
-    const ultimoMACD = novaMacdLinha;
-    const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
+    const ultimoMACD = state.macdCache.macdLine[state.macdCache.macdLine.length - 1] || 0;
+    const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1] || 0;
     
     return {
       histograma: ultimoMACD - ultimoSinal,
@@ -504,7 +561,7 @@ function calcularSuperTrend(dados, periodo = CONFIG.PERIODOS.SUPERTREND, multipl
       }
     }
     
-    state.superTrendCache.push({ direcao, valor: superTrend });
+    adicionarCache(state.superTrendCache, { direcao, valor: superTrend }, 100);
     return { direcao, valor: superTrend };
     
   } catch (e) {
@@ -562,7 +619,11 @@ function detectarDivergencias(closes, rsis, highs, lows) {
       const lastRsiHigh = rsiHighs[rsiHighs.length - 1];
       const prevRsiHigh = rsiHighs[rsiHighs.length - 2];
       
-      if (lastPriceHigh.value > prevPriceHigh.value && 
+      const validDivergence = 
+        Math.abs(lastPriceHigh.value - prevPriceHigh.value) > (state.atrGlobal * 0.5) &&
+        Math.abs(lastRsiHigh.value - prevRsiHigh.value) > 5;
+      
+      if (validDivergence && lastPriceHigh.value > prevPriceHigh.value && 
           lastRsiHigh.value < prevRsiHigh.value) {
         divergenciaRegularBaixa = true;
       }
@@ -574,7 +635,11 @@ function detectarDivergencias(closes, rsis, highs, lows) {
       const lastRsiLow = rsiLows[rsiLows.length - 1];
       const prevRsiLow = rsiLows[rsiLows.length - 2];
       
-      if (lastPriceLow.value < prevPriceLow.value && 
+      const validDivergence = 
+        Math.abs(lastPriceLow.value - prevPriceLow.value) > (state.atrGlobal * 0.5) &&
+        Math.abs(lastRsiLow.value - prevRsiLow.value) > 5;
+      
+      if (validDivergence && lastPriceLow.value < prevPriceLow.value && 
           lastRsiLow.value > prevRsiLow.value) {
         divergenciaRegularAlta = true;
       }
@@ -611,22 +676,14 @@ async function analisarMercado() {
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
 
-    // Calcular EMAs
-    const calcularEMA = (dados, periodo) => {
-      const emaArray = calcularMedia.exponencial(dados, periodo);
-      return emaArray[emaArray.length - 1];
-    };
-
     const ema5 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
     const ema13 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
-
     const superTrend = calcularSuperTrend(dados);
     const rsi = calcularRSI(closes);
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
     const atr = calcularATR(dados);
     
-    // Preencher histórico de RSI
     state.rsiHistory = [];
     for (let i = CONFIG.PERIODOS.RSI; i < closes.length; i++) {
       state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
@@ -653,7 +710,10 @@ async function analisarMercado() {
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
-    // Aplicar cooldown
+    // Cooldown adaptativo baseado na volatilidade
+    const volatilidade = (indicadores.atr / indicadores.close);
+    state.cooldown = Math.max(1, Math.min(5, Math.floor(volatilidade * 100)));
+    
     if (sinal !== "ESPERAR" && state.cooldown <= 0) {
       state.cooldown = 3;
     } else if (state.cooldown > 0) {
@@ -701,7 +761,10 @@ async function analisarMercado() {
       criteriosElement.innerHTML = `<li>ERRO: ${e.message}</li>`;
     }
     
-    if (++state.tentativasErro > 3) setTimeout(() => location.reload(), 10000);
+    if (++state.tentativasErro > 3) {
+      const delay = Math.min(30000, 1000 * Math.pow(2, state.tentativasErro));
+      setTimeout(() => location.reload(), delay);
+    }
   } finally {
     state.leituraEmAndamento = false;
   }
@@ -718,6 +781,11 @@ async function obterDadosTwelveData() {
     const response = await fetch(url);
     
     if (!response.ok) {
+      if (response.status === 429) {
+        currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return obterDadosTwelveData();
+      }
       throw new Error(`Falha na API: ${response.status}`);
     }
     
@@ -744,6 +812,7 @@ async function obterDadosTwelveData() {
     if (errorCount >= 2) {
       currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
       errorCount = 0;
+      resetarCaches();
     }
     
     throw e;
@@ -755,9 +824,13 @@ async function obterDadosTwelveData() {
 // =============================================
 function sincronizarTimer() {
   clearInterval(state.intervaloAtual);
-  const agora = new Date();
-  const segundos = agora.getSeconds();
-  state.timer = 60 - segundos;
+  const now = new Date();
+  const nextMinute = new Date(now);
+  nextMinute.setMinutes(nextMinute.getMinutes() + 1);
+  nextMinute.setSeconds(0);
+  nextMinute.setMilliseconds(0);
+  
+  state.timer = Math.floor((nextMinute - now) / 1000);
   
   const elementoTimer = document.getElementById("timer");
   if (elementoTimer) {
