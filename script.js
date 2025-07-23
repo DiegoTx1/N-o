@@ -2,16 +2,10 @@
 // CONFIGURAÇÕES GLOBAIS (ATUALIZADAS PARA CRYPTO IDX)
 // =============================================
 const state = {
-  ultimos: [],
   timer: 60,
-  ultimaAtualizacao: "",
   leituraEmAndamento: false,
-  intervaloAtual: null,
   tentativasErro: 0,
-  ultimoSinal: null,
-  ultimoScore: 0,
   contadorLaterais: 0,
-  marketOpen: true,
   tendenciaDetectada: "NEUTRA",
   forcaTendencia: 0,
   dadosHistoricos: [],
@@ -83,11 +77,11 @@ const CONFIG = {
 };
 
 // =============================================
-// GERENCIADOR DE CHAVES API (INSERIDA A CHAVE FORNECIDA)
+// GERENCIADOR DE CHAVES API
 // =============================================
 const API_KEYS = [
-  "9cf795b2a4f14d43a049ca935d174ebb", // Chave fornecida
-  "0105e6681b894e0185704171c53f5075"  // Backup
+  "9cf795b2a4f14d43a049ca935d174ebb",
+  "0105e6681b894e0185704171c53f5075"
 ];
 let currentKeyIndex = 0;
 let errorCount = 0;
@@ -174,7 +168,7 @@ function gerarSinal(indicadores, divergencias, lateral) {
   state.suporteKey = zonas.suporte;
   state.resistenciaKey = zonas.resistencia;
   
-  // Priorizar tendência forte
+  // Priorizar tendência forte em cripto
   if (tendencia.forca > 80) {
     if (tendencia.tendencia.includes("ALTA") && 
         close > emaCurta && 
@@ -190,7 +184,7 @@ function gerarSinal(indicadores, divergencias, lateral) {
     }
   }
 
-  // Breakout
+  // Breakout em criptomoedas
   const variacao = state.resistenciaKey - state.suporteKey;
   const limiteBreakout = variacao * CONFIG.LIMIARES.BREAKOUT_THRESHOLD;
   
@@ -202,7 +196,7 @@ function gerarSinal(indicadores, divergencias, lateral) {
     return "PUT";
   }
   
-  // Divergências em RSI
+  // Divergências em RSI (muito importantes em cripto)
   if (divergencias.divergenciaRSI) {
     if (divergencias.tipoDivergencia === "ALTA" && 
         close > state.suporteKey &&
@@ -258,23 +252,6 @@ function calcularScore(sinal, indicadores, divergencias) {
   }
   
   return Math.min(100, Math.max(0, score));
-}
-
-// =============================================
-// FUNÇÕES UTILITÁRIAS
-// =============================================
-function formatarTimer(segundos) {
-  return `0:${segundos.toString().padStart(2, '0')}`;
-}
-
-function atualizarRelogio() {
-  const now = new Date();
-  state.ultimaAtualizacao = now.toLocaleTimeString("pt-BR", {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
-  state.marketOpen = true;
 }
 
 // =============================================
@@ -647,38 +624,23 @@ async function analisarMercado() {
 
     const score = calcularScore(sinal, indicadores, divergencias);
 
-    state.ultimoSinal = sinal;
-    state.ultimoScore = score;
-    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
-
-    // Exibir resultados no console
-    console.log("=======================================");
-    console.log(`📊 ${state.ultimaAtualizacao} - SINAL: ${sinal} (${score}%)`);
-    console.log(`💰 Preço: ${indicadores.close.toFixed(2)}`);
-    console.log(`📈 Tendência: ${state.tendenciaDetectada} (${state.forcaTendencia}%)`);
-    console.log(`📉 RSI: ${rsi.toFixed(2)} ${rsi < CONFIG.LIMIARES.RSI_OVERSOLD ? '🔻' : rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT ? '🔺' : ''}`);
-    console.log(`📊 MACD: ${macd.histograma > 0 ? '+' : ''}${macd.histograma.toFixed(4)} ${macd.histograma > 0 ? '🟢' : '🔴'}`);
-    console.log(`📈 Stochastic: K:${stoch.k.toFixed(2)} D:${stoch.d.toFixed(2)}`);
-    console.log(`📌 Médias: EMA5 ${ema5.toFixed(2)} | EMA13 ${ema13.toFixed(2)}`);
-    console.log(`📊 Suporte: ${state.suporteKey.toFixed(2)} | Resistência: ${state.resistenciaKey.toFixed(2)}`);
-    console.log(`⚠️ Divergência: ${divergencias.tipoDivergencia}`);
-    console.log(`🚦 SuperTrend: ${superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'} (${superTrend.valor.toFixed(2)})`);
-    console.log(`⚡ Volatilidade (ATR): ${atr.toFixed(4)}`);
-    console.log(`🔄 Lateral: ${lateral ? 'SIM' : 'NÃO'}`);
-    console.log("=======================================");
-
-    state.ultimos.unshift(`${state.ultimaAtualizacao} - ${sinal} (${score}%)`);
-    if (state.ultimos.length > 8) state.ultimos.pop();
+    // Log de resultados
+    const horaAtual = new Date().toLocaleTimeString("pt-BR");
+    console.log(`[${horaAtual}] Sinal: ${sinal}`);
+    console.log(`   Confiança: ${score}%`);
+    console.log(`   Tendência: ${state.tendenciaDetectada} (${state.forcaTendencia}%)`);
+    console.log(`   Preço: ${indicadores.close.toFixed(2)} | RSI: ${rsi.toFixed(2)} | MACD: ${macd.histograma.toFixed(4)} | Stoch: ${stoch.k.toFixed(2)}/${stoch.d.toFixed(2)}`);
+    console.log(`   Suporte: ${state.suporteKey.toFixed(2)} | Resistência: ${state.resistenciaKey.toFixed(2)}`);
+    console.log('--------------------------------------------');
 
     state.tentativasErro = 0;
   } catch (e) {
-    console.error("❌ Erro na análise:", e);
-    
+    console.error("Erro na análise:", e);
     if (++state.tentativasErro > 3) {
-      console.log("🔄 Reiniciando sistema...");
+      console.log("Reiniciando sistema...");
       setTimeout(() => {
         console.clear();
-        iniciarSistema();
+        state.tentativasErro = 0;
       }, 10000);
     }
   } finally {
@@ -717,13 +679,13 @@ async function obterDadosTwelveData() {
       volume: parseFloat(item.volume) || 1
     }));
   } catch (e) {
-    console.error("❌ Erro ao obter dados:", e);
+    console.error("Erro ao obter dados:", e);
     
     errorCount++;
     if (errorCount >= 2) {
       currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
       errorCount = 0;
-      console.log(`🔄 Alternando para API key: ${currentKeyIndex}`);
+      console.log(`Alternando para API key: ${currentKeyIndex}`);
     }
     
     throw e;
@@ -731,40 +693,19 @@ async function obterDadosTwelveData() {
 }
 
 // =============================================
-// CONTROLE DE TEMPO
+// INICIALIZAÇÃO E EXECUÇÃO
 // =============================================
-function sincronizarTimer() {
-  clearInterval(state.intervaloAtual);
-  const agora = new Date();
-  const segundos = agora.getSeconds();
-  state.timer = 60 - segundos;
+function iniciarMonitoramento() {
+  console.log("Iniciando robô de trading para CRYPTO IDX...");
+  console.log(`Par: ${CONFIG.PARES.CRYPTO_IDX}`);
+  console.log("--------------------------------------------");
   
-  state.intervaloAtual = setInterval(() => {
-    state.timer--;
-    
-    if (state.timer <= 0) {
-      clearInterval(state.intervaloAtual);
-      analisarMercado();
-      sincronizarTimer();
-    }
-  }, 1000);
+  // Primeira análise imediata
+  analisarMercado();
+  
+  // Agendar análises periódicas (a cada minuto)
+  setInterval(analisarMercado, 60000);
 }
 
-// =============================================
-// INICIALIZAÇÃO DO SISTEMA
-// =============================================
-function iniciarSistema() {
-  console.clear();
-  console.log("🚀 Iniciando robô de trading para CRYPTO IDX...");
-  console.log("⏳ Sincronizando timer...");
-  
-  // Iniciar processos
-  setInterval(atualizarRelogio, 1000);
-  sincronizarTimer();
-  
-  // Primeira análise
-  setTimeout(analisarMercado, 1000);
-}
-
-// Iniciar sistema
-iniciarSistema();
+// Iniciar o sistema
+iniciarMonitoramento();
