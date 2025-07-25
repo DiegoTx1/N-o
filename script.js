@@ -39,7 +39,8 @@ const state = {
     superior: 0,
     inferior: 0,
     medio: 0
-  }
+  },
+  obvHistory: [] // Novo histórico para OBV
 };
 
 const CONFIG = {
@@ -78,7 +79,8 @@ const CONFIG = {
     VARIACAO_LATERAL: 0.008,
     ATR_LIMIAR: 0.025,
     LATERALIDADE_LIMIAR: 0.008,
-    VOLUME_ALERTA: 1.5
+    VOLUME_ALERTA: 1.5,
+    OBV_THRESHOLD: 10000
   },
   PESOS: {
     RSI: 1.7,
@@ -178,12 +180,14 @@ function calcularVolumeRelativo(volumes, periodo = CONFIG.PERIODOS.VOLUME_LOOKBA
   return ultimoVolume / mediaVolume;
 }
 
-// 2. On-Balance Volume (OBV)
+// 2. On-Balance Volume (OBV) - CORRIGIDO
 function calcularOBV(closes, volumes) {
-  if (closes.length < 2 || volumes.length < 2) return 0;
+  if (closes.length < 2 || volumes.length < 2) return state.obv || 0;
   
   let obv = state.obv || 0;
-  const startIndex = state.obv === 0 ? 1 : closes.length - 1;
+  
+  // Começar do último ponto calculado
+  const startIndex = state.obvHistory.length > 0 ? state.obvHistory.length : 1;
   
   for (let i = startIndex; i < closes.length; i++) {
     if (closes[i] > closes[i-1]) {
@@ -191,6 +195,8 @@ function calcularOBV(closes, volumes) {
     } else if (closes[i] < closes[i-1]) {
       obv -= volumes[i];
     }
+    // Manter histórico do OBV para divergências
+    state.obvHistory[i] = obv;
   }
   
   return obv;
@@ -235,7 +241,7 @@ function calcularBandasBollinger(closes, periodo = CONFIG.PERIODOS.BOLLINGER, de
 }
 
 // =============================================
-// GERADOR DE SINAIS OTIMIZADO
+// GERADOR DE SINAIS OTIMIZADO (REVISADO)
 // =============================================
 function gerarSinal(indicadores, divergencias, lateral) {
   const {
@@ -253,50 +259,83 @@ function gerarSinal(indicadores, divergencias, lateral) {
     bandasBollinger
   } = indicadores;
 
-  // 1. Tendência forte com volume
-  if (tendencia.forca > 80 && volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) {
-    if (tendencia.tendencia === "FORTE_ALTA" && close > vwap && close > bandasBollinger.medio) {
+  // 1. Tendência forte com volume e confirmação de preço
+  if (tendencia.forca > 75 && volumeRelativo > 1.7) {
+    if (tendencia.tendencia.includes("ALTA") && 
+        close > vwap && 
+        close > bandasBollinger.medio &&
+        emaCurta > emaMedia &&
+        macd.histograma > 0) {
       return "CALL";
     }
-    if (tendencia.tendencia === "FORTE_BAIXA" && close < vwap && close < bandasBollinger.medio) {
+    if (tendencia.tendencia.includes("BAIXA") && 
+        close < vwap && 
+        close < bandasBollinger.medio &&
+        emaCurta < emaMedia &&
+        macd.histograma < 0) {
       return "PUT";
     }
   }
 
   // 2. Breakout com volume e Bollinger
-  const limiteBreakout = (bandasBollinger.superior - bandasBollinger.inferior) * 0.1;
+  const limiteBreakout = (bandasBollinger.superior - bandasBollinger.inferior) * 0.05;
   
-  if (close > (bandasBollinger.superior + limiteBreakout) && volumeRelativo > 1.8) {
+  if (close > (bandasBollinger.superior - limiteBreakout) && 
+      volumeRelativo > 1.8 &&
+      rsi < 70) {
     return "CALL";
   }
   
-  if (close < (bandasBollinger.inferior - limiteBreakout) && volumeRelativo > 1.8) {
+  if (close < (bandasBollinger.inferior + limiteBreakout) && 
+      volumeRelativo > 1.8 &&
+      rsi > 30) {
     return "PUT";
   }
 
-  // 3. Divergências com OBV
+  // 3. Divergências com confirmação de preço
   if (divergencias.divergenciaRSI) {
-    if (divergencias.tipoDivergencia === "ALTA" && state.obv > 0) {
+    if (divergencias.tipoDivergencia === "ALTA" && 
+        close > ema50 &&
+        stoch.k > 30) {
       return "CALL";
     }
     
-    if (divergencias.tipoDivergencia === "BAIXA" && state.obv < 0) {
+    if (divergencias.tipoDivergencia === "BAIXA" && 
+        close < ema50 &&
+        stoch.k < 70) {
       return "PUT";
     }
   }
 
   // 4. Reversão com múltiplos indicadores
-  if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD && 
-      stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD && 
+  if (rsi < 28 && 
+      stoch.k < 20 && 
       close > vwap && 
-      macd.histograma > 0) {
+      macd.histograma > 0 &&
+      !lateral) {
     return "CALL";
   }
   
-  if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT && 
-      stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT && 
+  if (rsi > 72 && 
+      stoch.k > 80 && 
       close < vwap && 
-      macd.histograma < 0) {
+      macd.histograma < 0 &&
+      !lateral) {
+    return "PUT";
+  }
+  
+  // 5. Confirmação SuperTrend
+  if (superTrend.direcao > 0 && 
+      close > superTrend.valor && 
+      emaCurta > emaMedia &&
+      volumeRelativo > 1.3) {
+    return "CALL";
+  }
+  
+  if (superTrend.direcao < 0 && 
+      close < superTrend.valor && 
+      emaCurta < emaMedia &&
+      volumeRelativo > 1.3) {
     return "PUT";
   }
   
@@ -326,7 +365,7 @@ function calcularScore(sinal, indicadores, divergencias) {
       (sinal === "PUT" && state.obv < 0)) score += 7;
 
   // Penalizar lateralidade
-  if (state.contadorLaterais > 5) score = Math.max(0, score - 15);
+  if (state.contadorLaterais > 5) score = Math.max(0, score - 25);
   
   return Math.min(100, Math.max(0, score));
 }
@@ -395,7 +434,7 @@ const calcularMedia = {
     if (!Array.isArray(dados) || dados.length < periodo) return null;
     
     const k = 2 / (periodo + 1);
-    let ema = calcularMedia.simples(dados.slice(0, periodo), periodo);
+    let ema = calcularMedia.simples(dados.slice(0, periodo), periodo) || dados[0];
     
     for (let i = periodo; i < dados.length; i++) {
       ema = dados[i] * k + ema * (1 - k);
@@ -520,7 +559,7 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
     
     const novaMacdLinha = state.macdCache.emaRapida - state.macdCache.emaLenta;
     
-    const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
+    const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1] || novaMacdLinha;
     const novoSignal = novaMacdLinha * kSinal + ultimoSinal * (1 - kSinal);
     
     state.macdCache.macdLine.push(novaMacdLinha);
