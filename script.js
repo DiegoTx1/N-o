@@ -15,8 +15,6 @@ const state = {
   tendenciaDetectada: "NEUTRA",
   forcaTendencia: 0,
   dadosHistoricos: [],
-  resistenciaKey: 0,
-  suporteKey: 0,
   rsiCache: { avgGain: 0, avgLoss: 0, initialized: false },
   emaCache: {
     ema5: null,
@@ -58,11 +56,9 @@ const CONFIG = {
     EMA_CURTA: 5,
     EMA_MEDIA: 13,
     EMA_50: 50,
-    EMA_LONGA: 200,
     MACD_RAPIDA: 6,
     MACD_LENTA: 13,
     MACD_SINAL: 9,
-    VELAS_CONFIRMACAO: 3,
     ANALISE_LATERAL: 20,
     ATR: 14,
     SUPERTREND: 7,
@@ -110,9 +106,14 @@ let errorCount = 0;
 // SISTEMA DE TENDÊNCIA OTIMIZADO (COM EMA50)
 // =============================================
 function avaliarTendencia(ema5, ema13, ema50) {
+  if (ema5 === null || ema13 === null || ema50 === null) {
+    return { tendencia: "NEUTRA", forca: 0 };
+  }
+  
   const diffCurta = ema5 - ema13;
   const diffLonga = ema13 - ema50;
-  const forca = Math.min(100, (Math.abs(diffCurta) * 5000 + Math.abs(diffLonga) * 3000));
+  const magnitude = Math.sqrt(diffCurta * diffCurta + diffLonga * diffLonga);
+  const forca = Math.min(100, magnitude * 1000);
   
   if (forca > 80) {
     return diffCurta > 0 && diffLonga > 0 
@@ -137,14 +138,14 @@ function avaliarTendencia(ema5, ema13, ema50) {
 function detectarLateralidade(closes, periodo = CONFIG.PERIODOS.ANALISE_LATERAL, limiar = CONFIG.LIMIARES.LATERALIDADE_LIMIAR) {
   if (closes.length < periodo) return false;
   
-  let countLaterais = 0;
-  for (let i = closes.length - 1; i > closes.length - periodo; i--) {
-    const variacao = Math.abs((closes[i] - closes[i-1]) / closes[i-1]);
-    if (variacao < limiar) countLaterais++;
+  let variacaoTotal = 0;
+  for (let i = closes.length - periodo; i < closes.length - 1; i++) {
+    variacaoTotal += Math.abs((closes[i + 1] - closes[i]) / closes[i]);
   }
   
-  state.contadorLaterais = countLaterais;
-  return countLaterais > periodo * 0.7;
+  const variacaoMedia = variacaoTotal / (periodo - 1);
+  state.contadorLaterais = variacaoMedia < limiar ? periodo : 0;
+  return variacaoMedia < limiar;
 }
 
 // =============================================
@@ -171,7 +172,7 @@ function calcularVolumeRelativo(volumes, periodo = CONFIG.PERIODOS.VOLUME_LOOKBA
   if (volumes.length < periodo) return 0;
   
   const slice = volumes.slice(-periodo);
-  const mediaVolume = calcularMedia.simples(slice, periodo);
+  const mediaVolume = slice.reduce((sum, vol) => sum + vol, 0) / periodo;
   const ultimoVolume = volumes[volumes.length - 1];
   
   return ultimoVolume / mediaVolume;
@@ -179,16 +180,19 @@ function calcularVolumeRelativo(volumes, periodo = CONFIG.PERIODOS.VOLUME_LOOKBA
 
 // 2. On-Balance Volume (OBV)
 function calcularOBV(closes, volumes) {
-  if (closes.length < 2) return 0;
+  if (closes.length < 2 || volumes.length < 2) return 0;
   
-  let obv = 0;
-  for (let i = 1; i < closes.length; i++) {
+  let obv = state.obv || 0;
+  const startIndex = state.obv === 0 ? 1 : closes.length - 1;
+  
+  for (let i = startIndex; i < closes.length; i++) {
     if (closes[i] > closes[i-1]) {
       obv += volumes[i];
     } else if (closes[i] < closes[i-1]) {
       obv -= volumes[i];
     }
   }
+  
   return obv;
 }
 
@@ -214,7 +218,7 @@ function calcularBandasBollinger(closes, periodo = CONFIG.PERIODOS.BOLLINGER, de
   if (closes.length < periodo) return { superior: 0, inferior: 0, medio: 0 };
   
   const slice = closes.slice(-periodo);
-  const media = calcularMedia.simples(slice, periodo);
+  const media = slice.reduce((sum, val) => sum + val, 0) / periodo;
   
   let somaQuadrados = 0;
   slice.forEach(valor => {
@@ -231,7 +235,7 @@ function calcularBandasBollinger(closes, periodo = CONFIG.PERIODOS.BOLLINGER, de
 }
 
 // =============================================
-// GERADOR DE SINAIS OTIMIZADO (ATUALIZADO)
+// GERADOR DE SINAIS OTIMIZADO
 // =============================================
 function gerarSinal(indicadores, divergencias, lateral) {
   const {
@@ -246,40 +250,53 @@ function gerarSinal(indicadores, divergencias, lateral) {
     tendencia,
     volumeRelativo,
     vwap,
-    bandasBollinger,
-    atr
+    bandasBollinger
   } = indicadores;
 
-  // Condições reforçadas para CALL
-  const condicoesCall = [
-    tendencia.forca > 80 && volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA,
-    tendencia.tendencia === "FORTE_ALTA" && close > vwap && close > bandasBollinger.medio,
-    close > (bandasBollinger.superior) && volumeRelativo > 1.8 && atr > CONFIG.LIMIARES.ATR_LIMIAR,
-    rsi < CONFIG.LIMIARES.RSI_OVERSOLD && stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD && close > vwap && macd.histograma > 0,
-    divergencias.divergenciaRSI && divergencias.tipoDivergencia === "ALTA" && state.obv > 0
-  ];
+  // 1. Tendência forte com volume
+  if (tendencia.forca > 80 && volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) {
+    if (tendencia.tendencia === "FORTE_ALTA" && close > vwap && close > bandasBollinger.medio) {
+      return "CALL";
+    }
+    if (tendencia.tendencia === "FORTE_BAIXA" && close < vwap && close < bandasBollinger.medio) {
+      return "PUT";
+    }
+  }
 
-  // Condições reforçadas para PUT
-  const condicoesPut = [
-    tendencia.forca > 80 && volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA,
-    tendencia.tendencia === "FORTE_BAIXA" && close < vwap && close < bandasBollinger.medio,
-    close < (bandasBollinger.inferior) && volumeRelativo > 1.8 && atr > CONFIG.LIMIARES.ATR_LIMIAR,
-    rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT && stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT && close < vwap && macd.histograma < 0,
-    divergencias.divergenciaRSI && divergencias.tipoDivergencia === "BAIXA" && state.obv < 0
-  ];
-
-  // Verificar múltiplas condições simultâneas
-  const callConfirmado = condicoesCall.filter(Boolean).length >= 2;
-  const putConfirmado = condicoesPut.filter(Boolean).length >= 2;
-
-  // Evitar sinais em condições laterais
-  const volatilidadeSuficiente = atr > CONFIG.LIMIARES.ATR_LIMIAR * 0.7;
-
-  if (callConfirmado && volatilidadeSuficiente && !lateral) {
+  // 2. Breakout com volume e Bollinger
+  const limiteBreakout = (bandasBollinger.superior - bandasBollinger.inferior) * 0.1;
+  
+  if (close > (bandasBollinger.superior + limiteBreakout) && volumeRelativo > 1.8) {
     return "CALL";
   }
   
-  if (putConfirmado && volatilidadeSuficiente && !lateral) {
+  if (close < (bandasBollinger.inferior - limiteBreakout) && volumeRelativo > 1.8) {
+    return "PUT";
+  }
+
+  // 3. Divergências com OBV
+  if (divergencias.divergenciaRSI) {
+    if (divergencias.tipoDivergencia === "ALTA" && state.obv > 0) {
+      return "CALL";
+    }
+    
+    if (divergencias.tipoDivergencia === "BAIXA" && state.obv < 0) {
+      return "PUT";
+    }
+  }
+
+  // 4. Reversão com múltiplos indicadores
+  if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD && 
+      stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD && 
+      close > vwap && 
+      macd.histograma > 0) {
+    return "CALL";
+  }
+  
+  if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT && 
+      stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT && 
+      close < vwap && 
+      macd.histograma < 0) {
     return "PUT";
   }
   
@@ -287,33 +304,29 @@ function gerarSinal(indicadores, divergencias, lateral) {
 }
 
 // =============================================
-// CALCULADOR DE CONFIANÇA OTIMIZADO (ATUALIZADO)
+// CALCULADOR DE CONFIANÇA OTIMIZADO
 // =============================================
 function calcularScore(sinal, indicadores, divergencias) {
-  let score = 60; // Base reduzida para exigir mais confirmações
+  let score = 65;
 
-  const fatores = {
-    alinhamentoTendencia: sinal === "CALL" && indicadores.tendencia.tendencia.includes("ALTA") ||
-                          sinal === "PUT" && indicadores.tendencia.tendencia.includes("BAIXA") ? 22 : 0,
-    divergencia: divergencias.divergenciaRSI ? 18 : 0,
-    volume: indicadores.volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA ? 14 : 0,
-    vwap: sinal === "CALL" && indicadores.close > indicadores.vwap ? 11 : 
-           sinal === "PUT" && indicadores.close < indicadores.vwap ? 11 : 0,
-    bollinger: sinal === "CALL" && indicadores.close > indicadores.bandasBollinger.medio ? 9 :
-               sinal === "PUT" && indicadores.close < indicadores.bandasBollinger.medio ? 9 : 0,
-    obv: (sinal === "CALL" && state.obv > 0) || (sinal === "PUT" && state.obv < 0) ? 8 : 0,
-    volatilidade: indicadores.atr > CONFIG.LIMIARES.ATR_LIMIAR * 0.8 ? 10 : 0
-  };
+  // Fatores de aumento de confiança
+  if (sinal === "CALL" && indicadores.tendencia.tendencia.includes("ALTA")) score += 25;
+  if (sinal === "PUT" && indicadores.tendencia.tendencia.includes("BAIXA")) score += 25;
   
-  score += Object.values(fatores).reduce((sum, val) => sum + val, 0);
+  if (divergencias.divergenciaRSI) score += 20;
+  if (indicadores.volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) score += 15;
   
-  // Penalizar lateralidade e baixa volatilidade
-  if (state.contadorLaterais > 5) score = Math.max(0, score - 18);
-  if (indicadores.atr < CONFIG.LIMIARES.ATR_LIMIAR * 0.5) score = Math.max(0, score - 12);
+  if ((sinal === "CALL" && indicadores.close > indicadores.vwap) ||
+      (sinal === "PUT" && indicadores.close < indicadores.vwap)) score += 10;
   
-  // Bônus para múltiplas confirmações
-  const confirmacoes = Object.values(fatores).filter(val => val > 0).length;
-  if (confirmacoes >= 4) score = Math.min(100, score + 8);
+  if ((sinal === "CALL" && indicadores.close > indicadores.bandasBollinger.medio) ||
+      (sinal === "PUT" && indicadores.close < indicadores.bandasBollinger.medio)) score += 8;
+  
+  if ((sinal === "CALL" && state.obv > 0) ||
+      (sinal === "PUT" && state.obv < 0)) score += 7;
+
+  // Penalizar lateralidade
+  if (state.contadorLaterais > 5) score = Math.max(0, score - 15);
   
   return Math.min(100, Math.max(0, score));
 }
@@ -347,17 +360,17 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
     comandoElement.textContent = sinal;
     comandoElement.className = sinal.toLowerCase();
     
-    if (sinal === "CALL") comandoElement.textContent += " 📈";
-    else if (sinal === "PUT") comandoElement.textContent += " 📉";
-    else if (sinal === "ESPERAR") comandoElement.textContent += " ✋";
+    if (sinal === "CALL") comandoElement.innerHTML = "CALL <i class='fas fa-arrow-up'></i>";
+    else if (sinal === "PUT") comandoElement.innerHTML = "PUT <i class='fas fa-arrow-down'></i>";
+    else if (sinal === "ESPERAR") comandoElement.innerHTML = "ESPERAR <i class='fas fa-pause'></i>";
   }
   
   const scoreElement = document.getElementById("score");
   if (scoreElement) {
     scoreElement.textContent = `Confiança: ${score}%`;
-    if (score >= CONFIG.LIMIARES.SCORE_ALTO) scoreElement.style.color = '#00ff00';
-    else if (score >= CONFIG.LIMIARES.SCORE_MEDIO) scoreElement.style.color = '#ffff00';
-    else scoreElement.style.color = '#ff0000';
+    if (score >= CONFIG.LIMIARES.SCORE_ALTO) scoreElement.style.color = '#00b894';
+    else if (score >= CONFIG.LIMIARES.SCORE_MEDIO) scoreElement.style.color = '#fdcb6e';
+    else scoreElement.style.color = '#ff7675';
   }
   
   const tendenciaElement = document.getElementById("tendencia");
@@ -369,7 +382,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
 }
 
 // =============================================
-// INDICADORES TÉCNICOS
+// INDICADORES TÉCNICOS CORRIGIDOS
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -379,18 +392,16 @@ const calcularMedia = {
   },
 
   exponencial: (dados, periodo) => {
-    if (!Array.isArray(dados) || dados.length < periodo) return [];
+    if (!Array.isArray(dados) || dados.length < periodo) return null;
     
     const k = 2 / (periodo + 1);
     let ema = calcularMedia.simples(dados.slice(0, periodo), periodo);
-    const emaArray = [ema];
     
     for (let i = periodo; i < dados.length; i++) {
       ema = dados[i] * k + ema * (1 - k);
-      emaArray.push(ema);
     }
     
-    return emaArray;
+    return ema;
   }
 };
 
@@ -408,22 +419,25 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
     state.rsiCache.avgGain = gains / periodo;
     state.rsiCache.avgLoss = losses / periodo;
     state.rsiCache.initialized = true;
+    state.rsiCache.lastPrice = closes[closes.length - 1];
     
-    const rs = state.rsiCache.avgLoss === 0 ? Infinity : state.rsiCache.avgGain / state.rsiCache.avgLoss;
+    if (state.rsiCache.avgLoss === 0) return 100;
+    const rs = state.rsiCache.avgGain / state.rsiCache.avgLoss;
     return 100 - (100 / (1 + rs));
   }
   
-  const diff = closes[closes.length - 1] - closes[closes.length - 2];
+  const diff = closes[closes.length - 1] - state.rsiCache.lastPrice;
+  state.rsiCache.lastPrice = closes[closes.length - 1];
   
-  if (diff > 0) {
-    state.rsiCache.avgGain = ((state.rsiCache.avgGain * (periodo - 1)) + diff) / periodo;
-    state.rsiCache.avgLoss = (state.rsiCache.avgLoss * (periodo - 1)) / periodo;
-  } else {
-    state.rsiCache.avgGain = (state.rsiCache.avgGain * (periodo - 1)) / periodo;
-    state.rsiCache.avgLoss = ((state.rsiCache.avgLoss * (periodo - 1)) - diff) / periodo;
-  }
+  let gain = 0, loss = 0;
+  if (diff > 0) gain = diff;
+  else loss = -diff;
   
-  const rs = state.rsiCache.avgLoss === 0 ? Infinity : state.rsiCache.avgGain / state.rsiCache.avgLoss;
+  state.rsiCache.avgGain = ((state.rsiCache.avgGain * (periodo - 1)) + gain) / periodo;
+  state.rsiCache.avgLoss = ((state.rsiCache.avgLoss * (periodo - 1)) + loss) / periodo;
+  
+  if (state.rsiCache.avgLoss === 0) return 100;
+  const rs = state.rsiCache.avgGain / state.rsiCache.avgLoss;
   return 100 - (100 / (1 + rs));
 }
 
@@ -451,18 +465,18 @@ function calcularStochastic(highs, lows, closes,
       kValues.push(k);
     }
     
+    if (kValues.length < periodoD) return { k: 50, d: 50 };
+    
     const kSuavizado = [];
     for (let i = periodoD - 1; i < kValues.length; i++) {
-      const startIndex = Math.max(0, i - periodoD + 1);
-      const slice = kValues.slice(startIndex, i + 1);
+      const slice = kValues.slice(i - periodoD + 1, i + 1);
       const mediaK = calcularMedia.simples(slice, periodoD) || 50;
       kSuavizado.push(mediaK);
     }
     
     const dValues = [];
     for (let i = periodoD - 1; i < kSuavizado.length; i++) {
-      const startIndex = Math.max(0, i - periodoD + 1);
-      const slice = kSuavizado.slice(startIndex, i + 1);
+      const slice = kSuavizado.slice(i - periodoD + 1, i + 1);
       dValues.push(calcularMedia.simples(slice, periodoD) || 50);
     }
     
@@ -481,27 +495,17 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
                     sinal = CONFIG.PERIODOS.MACD_SINAL) {
   try {
     if (state.macdCache.emaRapida === null || state.macdCache.emaLenta === null) {
-      const emaRapida = calcularMedia.exponencial(closes, rapida);
-      const emaLenta = calcularMedia.exponencial(closes, lenta);
+      state.macdCache.emaRapida = calcularMedia.exponencial(closes, rapida);
+      state.macdCache.emaLenta = calcularMedia.exponencial(closes, lenta);
       
-      const startIdx = Math.max(0, lenta - rapida);
-      const macdLinha = emaRapida.slice(startIdx).map((val, idx) => val - emaLenta[idx]);
-      const sinalLinha = calcularMedia.exponencial(macdLinha, sinal);
-      
-      const ultimoMACD = macdLinha[macdLinha.length - 1] || 0;
-      const ultimoSinal = sinalLinha[sinalLinha.length - 1] || 0;
-      
-      state.macdCache = {
-        emaRapida: emaRapida[emaRapida.length - 1],
-        emaLenta: emaLenta[emaLenta.length - 1],
-        macdLine: macdLinha,
-        signalLine: sinalLinha
-      };
+      const macdLinha = state.macdCache.emaRapida - state.macdCache.emaLenta;
+      state.macdCache.macdLine = [macdLinha];
+      state.macdCache.signalLine = [macdLinha];
       
       return {
-        histograma: ultimoMACD - ultimoSinal,
-        macdLinha: ultimoMACD,
-        sinalLinha: ultimoSinal
+        histograma: 0,
+        macdLinha: macdLinha,
+        sinalLinha: macdLinha
       };
     }
     
@@ -515,23 +519,17 @@ function calcularMACD(closes, rapida = CONFIG.PERIODOS.MACD_RAPIDA,
     state.macdCache.emaLenta = novoValor * kLenta + state.macdCache.emaLenta * (1 - kLenta);
     
     const novaMacdLinha = state.macdCache.emaRapida - state.macdCache.emaLenta;
-    state.macdCache.macdLine.push(novaMacdLinha);
     
-    if (state.macdCache.signalLine.length === 0) {
-      state.macdCache.signalLine.push(novaMacdLinha);
-    } else {
-      const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
-      const novoSignal = novaMacdLinha * kSinal + ultimoSinal * (1 - kSinal);
-      state.macdCache.signalLine.push(novoSignal);
-    }
-    
-    const ultimoMACD = novaMacdLinha;
     const ultimoSinal = state.macdCache.signalLine[state.macdCache.signalLine.length - 1];
+    const novoSignal = novaMacdLinha * kSinal + ultimoSinal * (1 - kSinal);
+    
+    state.macdCache.macdLine.push(novaMacdLinha);
+    state.macdCache.signalLine.push(novoSignal);
     
     return {
-      histograma: ultimoMACD - ultimoSinal,
-      macdLinha: ultimoMACD,
-      sinalLinha: ultimoSinal
+      histograma: novaMacdLinha - novoSignal,
+      macdLinha: novaMacdLinha,
+      sinalLinha: novoSignal
     };
   } catch (e) {
     console.error("Erro no cálculo MACD:", e);
@@ -703,14 +701,9 @@ async function analisarMercado() {
     const volumes = dados.map(v => v.volume);
 
     // Calcular EMAs
-    const calcularEMA = (dados, periodo) => {
-      const emaArray = calcularMedia.exponencial(dados, periodo);
-      return emaArray[emaArray.length - 1];
-    };
-
-    const ema5 = calcularEMA(closes, CONFIG.PERIODOS.EMA_CURTA);
-    const ema13 = calcularEMA(closes, CONFIG.PERIODOS.EMA_MEDIA);
-    const ema50 = calcularEMA(closes, CONFIG.PERIODOS.EMA_50);
+    state.emaCache.ema5 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_CURTA);
+    state.emaCache.ema13 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_MEDIA);
+    state.emaCache.ema50 = calcularMedia.exponencial(closes, CONFIG.PERIODOS.EMA_50);
 
     // Calcular novos indicadores
     state.volumeRelativo = calcularVolumeRelativo(volumes);
@@ -730,8 +723,12 @@ async function analisarMercado() {
       state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
     }
     
+    const zonas = calcularZonasPreco(dados);
+    state.resistenciaKey = zonas.resistencia;
+    state.suporteKey = zonas.suporte;
+    
     const divergencias = detectarDivergencias(closes, state.rsiHistory, highs, lows);
-    const tendencia = avaliarTendencia(ema5, ema13, ema50);
+    const tendencia = avaliarTendencia(state.emaCache.ema5, state.emaCache.ema13, state.emaCache.ema50);
     const lateral = detectarLateralidade(closes);
 
     state.tendenciaDetectada = tendencia.tendencia;
@@ -741,9 +738,9 @@ async function analisarMercado() {
       rsi,
       stoch,
       macd,
-      emaCurta: ema5,
-      emaMedia: ema13,
-      ema50,
+      emaCurta: state.emaCache.ema5,
+      emaMedia: state.emaCache.ema13,
+      ema50: state.emaCache.ema50,
       close: velaAtual.close,
       superTrend,
       tendencia,
@@ -769,17 +766,17 @@ async function analisarMercado() {
     state.ultimoScore = score;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
 
-    atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
+    atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia.toFixed(0));
 
     const criteriosElement = document.getElementById("criterios");
     if (criteriosElement) {
       criteriosElement.innerHTML = `
-        <li>📊 Tendência: ${state.tendenciaDetectada} (${state.forcaTendencia}%)</li>
+        <li>📊 Tendência: ${state.tendenciaDetectada} (${state.forcaTendencia.toFixed(0)}%)</li>
         <li>💰 Preço: ${indicadores.close.toFixed(2)}</li>
         <li>📉 RSI: ${rsi.toFixed(2)} ${rsi < CONFIG.LIMIARES.RSI_OVERSOLD ? '🔻' : rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT ? '🔺' : ''}</li>
         <li>📊 MACD: ${macd.histograma > 0 ? '+' : ''}${macd.histograma.toFixed(4)} ${macd.histograma > 0 ? '🟢' : '🔴'}</li>
         <li>📈 Stochastic: ${stoch.k.toFixed(2)}/${stoch.d.toFixed(2)}</li>
-        <li>📌 Médias: EMA5 ${ema5.toFixed(2)} | EMA13 ${ema13.toFixed(2)} | EMA50 ${ema50.toFixed(2)}</li>
+        <li>📌 Médias: EMA5 ${state.emaCache.ema5.toFixed(2)} | EMA13 ${state.emaCache.ema13.toFixed(2)} | EMA50 ${state.emaCache.ema50.toFixed(2)}</li>
         <li>📊 Suporte: ${state.suporteKey.toFixed(2)} | Resistência: ${state.resistenciaKey.toFixed(2)}</li>
         <li>⚠️ Divergência: ${divergencias.tipoDivergencia}</li>
         <li>🚦 SuperTrend: ${superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'} (${superTrend.valor.toFixed(2)})</li>
@@ -900,19 +897,22 @@ function iniciarAplicativo() {
     </h1>
     
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 25px; margin-bottom: 30px;">
-      <div id="comando" style="font-size: 32px; font-weight: 700; padding: 25px; border-radius: 12px; text-align: center; background: #2c2d3a; display: flex; align-items: center; justify-content: center; min-height: 120px;">
-        --
+      <div id="signalBox" style="font-size: 32px; font-weight: 700; padding: 25px; border-radius: 12px; text-align: center; background: #2c2d3a; display: flex; flex-direction: column; justify-content: center; min-height: 120px;">
+        <div>Sinal Atual</div>
+        <div id="comando">--</div>
+        <div id="signalIcon" class="signal-icon">📊</div>
       </div>
       
       <div style="display: flex; flex-direction: column; justify-content: center; background: #2c2d3a; padding: 20px; border-radius: 12px;">
         <div id="score" style="font-size: 22px; font-weight: 600; margin-bottom: 15px; text-align: center;">--</div>
-        
+        <div class="progress-bar" style="width: 100%; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; margin-bottom: 15px;">
+          <div id="confidenceBar" class="progress-fill" style="height: 100%; border-radius: 4px; width: 0%; background: #6c5ce7;"></div>
+        </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
           <div style="text-align: center;">
             <div style="font-size: 14px; opacity: 0.8;">Atualização</div>
             <div id="hora" style="font-size: 18px; font-weight: 600;">--:--:--</div>
           </div>
-          
           <div style="text-align: center;">
             <div style="font-size: 14px; opacity: 0.8;">Próxima Análise</div>
             <div id="timer" style="font-size: 18px; font-weight: 600;">0:60</div>
@@ -933,7 +933,6 @@ function iniciarAplicativo() {
           <h4 style="margin-top: 0; margin-bottom: 10px; color: #a29bfe;">Últimos Sinais</h4>
           <ul id="ultimos" style="list-style: none; padding: 0; margin: 0;"></ul>
         </div>
-        
         <div style="background: #3a3b4a; padding: 15px; border-radius: 8px;">
           <h4 style="margin-top: 0; margin-bottom: 10px; color: #a29bfe;">Indicadores</h4>
           <ul id="criterios" style="list-style: none; padding: 0; margin: 0;"></ul>
@@ -975,13 +974,13 @@ function iniciarAplicativo() {
       box-shadow: 0 4px 20px rgba(108, 92, 231, 0.3);
     }
     .erro { 
-      background: #fdcb6e !important; 
+      background: linear-gradient(135deg, #fdcb6e, #e17055) !important; 
       color: #2d3436 !important;
     }
     body {
       transition: background 0.5s ease;
     }
-    #comando {
+    #signalBox {
       transition: all 0.5s cubic-bezier(0.68, -0.55, 0.27, 1.55);
     }
   `;
