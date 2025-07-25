@@ -1,233 +1,252 @@
-// ==UserScript==
-// @name         Robô Trader IQ Option
-// @namespace    http://tampermonkey.net/
-// @version      1.5
-// @description  Robô para análise em tempo real na IQ Option
-// @author       SeuNome
-// @match        https://iqoption.com/traderoom/*
-// @grant        none
-// @require      https://cdn.jsdelivr.net/npm/axios@1.1.3/dist/axios.min.js
-// ==/UserScript==
+// Variáveis globais
+let historico = { win: 0, loss: 0 };
+let sinaisRecentes = [];
+let intervaloAnalise = 60; // segundos
+let analiseAtiva = true;
 
-(function() {
-    'use strict';
+// Elementos DOM
+const comandoElement = document.getElementById('comando');
+const scoreElement = document.getElementById('score');
+const timerElement = document.getElementById('timer');
+const horaElement = document.getElementById('hora');
+const criteriosElement = document.getElementById('criterios');
+const historicoElement = document.getElementById('historico');
+const ultimosElement = document.getElementById('ultimos');
+const somCall = document.getElementById('som-call');
+const somPut = document.getElementById('som-put');
+
+// Inicialização
+document.addEventListener('DOMContentLoaded', () => {
+  atualizarHistorico();
+  iniciarAnalise();
+  iniciarTemporizador();
+});
+
+// Função para iniciar o temporizador
+function iniciarTemporizador() {
+  let tempo = intervaloAnalise;
+  timerElement.textContent = tempo;
+  
+  const contador = setInterval(() => {
+    tempo--;
+    timerElement.textContent = tempo;
     
-    // =============================================
-    // CONFIGURAÇÕES GLOBAIS
-    // =============================================
-    const state = {
-        // ... (todo o state do seu robô original) ...
-        // ADICIONE AQUI TODO O STATE DO SEU ROBÔ ORIGINAL
-        assetId: null,
-        timeframe: "1min",
-        sessionId: null,
-        dadosHistoricos: []
+    if (tempo <= 0) {
+      clearInterval(contador);
+      if (analiseAtiva) {
+        realizarAnalise();
+      }
+      iniciarTemporizador();
+    }
+  }, 1000);
+}
+
+// Função para realizar a análise técnica
+async function realizarAnalise() {
+  try {
+    // Obter dados do BTCUSDT (simulação)
+    const dadosBTC = await obterDadosBTC();
+    
+    // Calcular indicadores
+    const ema9 = calcularEMA(dadosBTC.fechamentos, 9);
+    const ema21 = calcularEMA(dadosBTC.fechamentos, 21);
+    const rsi = calcularRSI(dadosBTC.fechamentos, 14);
+    const macd = calcularMACD(dadosBTC.fechamentos);
+    const volumeAtual = dadosBTC.volumes[dadosBTC.volumes.length - 1];
+    const volumeMedio = calcularMedia(dadosBTC.volumes, 5);
+    
+    // Critérios de análise
+    const criterios = {
+      tendenciaAlta: ema9 > ema21,
+      rsiNeutroAlta: rsi > 50 && rsi < 70,
+      rsiNeutroBaixa: rsi < 50 && rsi > 30,
+      macdPositivo: macd.histograma > 0,
+      volumeAcimaMedia: volumeAtual > volumeMedio,
+      tendenciaForte: Math.abs(ema9 - ema21) > dadosBTC.fechamentos[dadosBTC.fechamentos.length - 1] * 0.001
     };
-
-    const CONFIG = {
-        // ... (todo o CONFIG do seu robô original) ...
-        // ADICIONE AQUI TODO O CONFIG DO SEU ROBÔ ORIGINAL
-    };
-
-    // =============================================
-    // FUNÇÕES PRINCIPAIS (SIMPLIFICADAS)
-    // =============================================
-    function iniciarConexaoIQ() {
-        // 1. Capturar sessão do usuário
-        state.sessionId = capturarSessao();
-
-        // 2. Detectar ativo e timeframe
-        detectarAtivo();
-
-        // 3. Conectar ao WebSocket
-        const ws = new WebSocket("wss://iqoption.com/echo/websocket");
-
-        ws.onopen = () => {
-            console.log("[ROBÔ] Conectado à IQ Option");
-            autenticarWebSocket(ws);
-        };
-
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data?.name === "candle-generated") {
-                processarVela(data.msg);
-            }
-        };
+    
+    // Calcular score
+    let pontos = 0;
+    let totalCritérios = 0;
+    criteriosElement.innerHTML = '';
+    
+    // Avaliar cada critério
+    for (const [chave, valor] of Object.entries(criterios)) {
+      totalCritérios++;
+      if (valor) pontos++;
+      
+      const li = document.createElement('li');
+      li.textContent = formatarCritério(chave) + ': ' + (valor ? 'Atendido' : 'Não atendido');
+      li.className = valor ? 'criterio-positivo' : 'criterio-negativo';
+      criteriosElement.appendChild(li);
     }
-
-    function capturarSessao() {
-        const cookies = document.cookie.split(';');
-        const sessionCookie = cookies.find(c => c.includes('ssid'));
-        return sessionCookie ? sessionCookie.split('=')[1].trim() : null;
+    
+    const score = Math.round((pontos / totalCritérios) * 100);
+    scoreElement.textContent = `${score}%`;
+    
+    // Determinar sinal com base na pontuação
+    let sinal = 'ESPERAR';
+    let classe = 'esperar';
+    
+    if (score >= 70) {
+      if (criterios.tendenciaAlta && criterios.rsiNeutroAlta) {
+        sinal = 'CALL';
+        classe = 'call';
+        somCall.play().catch(e => console.log("Erro ao reproduzir som:", e));
+      } else if (!criterios.tendenciaAlta && criterios.rsiNeutroBaixa) {
+        sinal = 'PUT';
+        classe = 'put';
+        somPut.play().catch(e => console.log("Erro ao reproduzir som:", e));
+      }
     }
-
-    function detectarAtivo() {
-        try {
-            const assetName = document.querySelector(".trading-chart__info__name").innerText.trim();
-            const timeframe = document.querySelector(".time-filters__filter--active").dataset.interval;
-            
-            state.assetId = {
-                "BTC/USD": 1,
-                "EUR/USD": 3,
-                "ETH/USD": 2
-            }[assetName] || 1;
-
-            state.timeframe = timeframe || "1min";
-        } catch (e) {
-            console.error("Erro ao detectar ativo:", e);
-            state.assetId = 1; // BTC/USD como padrão
-            state.timeframe = "1min";
-        }
+    
+    // Atualizar interface
+    comandoElement.textContent = sinal;
+    comandoElement.className = classe;
+    
+    // Atualizar hora da última análise
+    const agora = new Date();
+    horaElement.textContent = agora.toLocaleTimeString();
+    
+    // Registrar sinal recente
+    if (sinal !== 'ESPERAR') {
+      registrarSinalRecente(sinal, score, agora);
     }
+    
+  } catch (erro) {
+    console.error('Erro na análise:', erro);
+    comandoElement.textContent = 'ERRO';
+    comandoElement.className = 'erro';
+    scoreElement.textContent = '--%';
+  }
+}
 
-    function autenticarWebSocket(ws) {
-        ws.send(JSON.stringify({
-            name: "ssid",
-            msg: state.sessionId
-        }));
+// Funções auxiliares para análise técnica
+function calcularEMA(valores, periodos) {
+  const k = 2 / (periodos + 1);
+  let ema = valores[0];
+  
+  for (let i = 1; i < valores.length; i++) {
+    ema = valores[i] * k + ema * (1 - k);
+  }
+  
+  return ema;
+}
 
-        setTimeout(() => {
-            ws.send(JSON.stringify({
-                name: "subscribeMessage",
-                msg: {
-                    name: "candle-generated",
-                    params: {
-                        routingFilters: {
-                            active_id: state.assetId,
-                            size: parseInt(state.timeframe)
-                        }
-                    }
-                }
-            }));
-        }, 1000);
+function calcularRSI(valores, periodos) {
+  let ganhos = 0;
+  let perdas = 0;
+  
+  for (let i = 1; i <= periodos; i++) {
+    const diferenca = valores[i] - valores[i - 1];
+    if (diferenca >= 0) {
+      ganhos += diferenca;
+    } else {
+      perdas -= diferenca;
     }
+  }
+  
+  const rs = ganhos / perdas;
+  return 100 - (100 / (1 + rs));
+}
 
-    function processarVela(vela) {
-        const novaVela = {
-            time: vela.created * 1000,
-            open: vela.open,
-            high: vela.max,
-            low: vela.min,
-            close: vela.close,
-            volume: vela.volume
-        };
+function calcularMACD(valores) {
+  const ema12 = calcularEMA(valores, 12);
+  const ema26 = calcularEMA(valores, 26);
+  const macd = ema12 - ema26;
+  const sinal = calcularEMA(valores.slice(-9), 9); // EMA 9 do MACD
+  const histograma = macd - sinal;
+  
+  return { macd, sinal, histograma };
+}
 
-        state.dadosHistoricos.push(novaVela);
+function calcularMedia(valores, periodos) {
+  const inicio = Math.max(0, valores.length - periodos);
+  const valoresRecentes = valores.slice(inicio);
+  const soma = valoresRecentes.reduce((acc, val) => acc + val, 0);
+  return soma / valoresRecentes.length;
+}
+
+function formatarCritério(chave) {
+  const formatos = {
+    tendenciaAlta: 'Tendência de Alta',
+    rsiNeutroAlta: 'RSI Neutro-Alta',
+    rsiNeutroBaixa: 'RSI Neutro-Baixa',
+    macdPositivo: 'MACD Positivo',
+    volumeAcimaMedia: 'Volume Acima da Média',
+    tendenciaForte: 'Tendência Forte'
+  };
+  
+  return formatos[chave] || chave;
+}
+
+// Funções de registro
+function registrar(resultado) {
+  if (resultado === 'WIN') historico.win++;
+  if (resultado === 'LOSS') historico.loss++;
+  atualizarHistorico();
+}
+
+function atualizarHistorico() {
+  historicoElement.textContent = `${historico.win} WIN / ${historico.loss} LOSS`;
+}
+
+function registrarSinalRecente(sinal, score, data) {
+  const sinalInfo = {
+    sinal,
+    score,
+    hora: data.toLocaleTimeString()
+  };
+  
+  sinaisRecentes.unshift(sinalInfo);
+  if (sinaisRecentes.length > 5) sinaisRecentes.pop();
+  
+  atualizarUltimosSinais();
+}
+
+function atualizarUltimosSinais() {
+  ultimosElement.innerHTML = '';
+  
+  sinaisRecentes.forEach(info => {
+    const li = document.createElement('li');
+    li.textContent = `${info.sinal} (${info.score}%)`;
+    li.className = info.sinal === 'CALL' ? 'sinal-call' : 'sinal-put';
+    const spanHora = document.createElement('span');
+    spanHora.textContent = info.hora;
+    spanHora.style.opacity = '0.7';
+    li.appendChild(spanHora);
+    ultimosElement.appendChild(li);
+  });
+}
+
+// Simulação de dados da API
+async function obterDadosBTC() {
+  // Em uma aplicação real, isso seria substituído por uma chamada API
+  return new Promise(resolve => {
+    setTimeout(() => {
+      // Gerar dados fictícios
+      const fechamentos = [];
+      const volumes = [];
+      let preco = 60000;
+      
+      for (let i = 0; i < 100; i++) {
+        const variacao = (Math.random() - 0.5) * 1000;
+        preco += variacao;
+        const volume = 100 + Math.random() * 50;
         
-        // Manter apenas 100 velas
-        if (state.dadosHistoricos.length > 100) {
-            state.dadosHistoricos.shift();
-        }
+        fechamentos.push(preco);
+        volumes.push(volume);
+      }
+      
+      resolve({ fechamentos, volumes });
+    }, 300);
+  });
+}
 
-        // Disparar análise
-        if (!state.leituraEmAndamento) {
-            analisarMercado();
-        }
-    }
-
-    // =============================================
-    // INTEGRAÇÃO COM A INTERFACE DA IQ OPTION
-    // =============================================
-    function criarInterface() {
-        // Remover interface antiga se existir
-        const oldContainer = document.getElementById("bot-container");
-        if (oldContainer) oldContainer.remove();
-
-        // Criar container do robô
-        const container = document.createElement('div');
-        container.id = "bot-container";
-        container.style = `
-            position: fixed;
-            bottom: 20px;
-            left: 20px;
-            z-index: 10000;
-            background: #1e1f29;
-            border-radius: 10px;
-            padding: 15px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-            min-width: 250px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            color: white;
-        `;
-
-        container.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <h3 style="margin: 0; color: #6c5ce7;">ROBÔ TRADER</h3>
-                <div id="bot-status" style="background: #4CAF50; width: 12px; height: 12px; border-radius: 50%;"></div>
-            </div>
-            <div id="bot-comando" style="font-size: 24px; font-weight: bold; text-align: center; padding: 10px; border-radius: 5px; background: #2c2d3a; margin-bottom: 10px;">
-                --
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <div style="text-align: center;">
-                    <div style="font-size: 12px; opacity: 0.7;">Confiança</div>
-                    <div id="bot-score" style="font-weight: bold;">--%</div>
-                </div>
-                <div style="text-align: center;">
-                    <div style="font-size: 12px; opacity: 0.7;">Ativo</div>
-                    <div id="bot-ativo">--</div>
-                </div>
-            </div>
-        `;
-
-        document.body.appendChild(container);
-    }
-
-    function atualizarInterface(sinal, score) {
-        const comando = document.getElementById("bot-comando");
-        const scoreEl = document.getElementById("bot-score");
-        const ativoEl = document.getElementById("bot-ativo");
-        
-        if (comando) {
-            comando.textContent = sinal;
-            comando.className = "";
-            comando.classList.add("bot-" + sinal.toLowerCase());
-            
-            if (sinal === "CALL") comando.innerHTML = "CALL 📈";
-            else if (sinal === "PUT") comando.innerHTML = "PUT 📉";
-            else comando.innerHTML = "ESPERAR ✋";
-        }
-        
-        if (scoreEl) scoreEl.textContent = `${score}%`;
-        if (ativoEl) ativoEl.textContent = Object.keys(ACTIVE_MAP).find(k => ACTIVE_MAP[k] === state.assetId) || "BTC/USD";
-    }
-
-    // =============================================
-    // INICIALIZAÇÃO DO SISTEMA
-    // =============================================
-    function iniciarRobo() {
-        // Aguardar carregamento da plataforma
-        const checkReady = setInterval(() => {
-            if (document.querySelector(".trading-chart")) {
-                clearInterval(checkReady);
-                
-                // Criar interface
-                criarInterface();
-                
-                // Iniciar conexão
-                iniciarConexaoIQ();
-                
-                console.log("[ROBÔ] Inicializado com sucesso!");
-            }
-        }, 3000);
-    }
-
-    // Mapeamento de ativos
-    const ACTIVE_MAP = {
-        "BTC/USD": 1,
-        "ETH/USD": 2,
-        "EUR/USD": 3
-    };
-
-    // Estilos dinâmicos
-    const style = document.createElement('style');
-    style.textContent = `
-        .bot-call { background: linear-gradient(135deg, #00b894, #00cec9) !important; color: white !important; }
-        .bot-put { background: linear-gradient(135deg, #ff7675, #d63031) !important; color: white !important; }
-        .bot-esperar { background: linear-gradient(135deg, #0984e3, #6c5ce7) !important; color: white !important; }
-    `;
-    document.head.appendChild(style);
-
-    // Iniciar quando a página carregar
-    window.addEventListener('load', iniciarRobo);
-})();
+// Iniciar o processo de análise
+function iniciarAnalise() {
+  realizarAnalise();
+  setInterval(() => {
+    if (analiseAtiva) realizarAnalise();
+  }, intervaloAnalise * 1000);
+}
