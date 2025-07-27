@@ -41,7 +41,8 @@ const state = {
     superior: 0,
     inferior: 0,
     medio: 0
-  }
+  },
+  lastActionTime: null
 };
 
 const CONFIG = {
@@ -82,7 +83,9 @@ const CONFIG = {
     VARIACAO_LATERAL: 0.008,
     ATR_LIMIAR: 0.025,
     LATERALIDADE_LIMIAR: 0.008,
-    VOLUME_ALERTA: 1.5
+    VOLUME_ALERTA: 1.5,
+    VOLUME_IMPULSO: 2.0,
+    MIN_CONFIRMATIONS: 3
   },
   PESOS: {
     RSI: 1.7,
@@ -94,6 +97,11 @@ const CONFIG = {
     VOLUME: 1.5,
     VWAP: 1.3,
     BOLLINGER: 1.4
+  },
+  COOLDOWN_TIMES: {
+    HIGH_VOLATILITY: 2,
+    MEDIUM_VOLATILITY: 3,
+    LOW_VOLATILITY: 5
   }
 };
 
@@ -102,7 +110,7 @@ const CONFIG = {
 // =============================================
 const API_KEYS = [
   "0105e6681b894e0185704171c53f5075",
-  "b9d6a5d8a4a24a8f8d6f7d8c6f8d7a5d"  // Chave adicional para redundância
+  "b9d6a5d8a4a24a8f8d6f7d8c6f8d7a5d"
 ];
 let currentKeyIndex = 0;
 let errorCount = 0;
@@ -237,7 +245,7 @@ function calcularBandasBollinger(closes, periodo = CONFIG.PERIODOS.BOLLINGER, de
 }
 
 // =============================================
-// GERADOR DE SINAIS OTIMIZADO
+// GERADOR DE SINAIS OTIMIZADO (VERSÃO MELHORADA)
 // =============================================
 function gerarSinal(indicadores, divergencias, lateral) {
   const {
@@ -255,46 +263,62 @@ function gerarSinal(indicadores, divergencias, lateral) {
     bandasBollinger
   } = indicadores;
 
-  // 1. Tendência forte com volume
-  if (tendencia.forca > 80 && volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) {
-    if (tendencia.tendencia === "FORTE_ALTA" && close > vwap && close > bandasBollinger.medio) {
-      return "CALL";
-    }
-    if (tendencia.tendencia === "FORTE_BAIXA" && close < vwap && close < bandasBollinger.medio) {
-      return "PUT";
-    }
+  let pontosCall = 0;
+  let pontosPut = 0;
+  const pontosMinimos = CONFIG.LIMIARES.MIN_CONFIRMATIONS;
+
+  // 1. Tendência (Peso máximo)
+  if (tendencia.forca > 80) {
+    if (tendencia.tendencia === "FORTE_ALTA") pontosCall += 3;
+    if (tendencia.tendencia === "FORTE_BAIXA") pontosPut += 3;
+  } else if (tendencia.forca > 45) {
+    if (tendencia.tendencia === "ALTA") pontosCall += 2;
+    if (tendencia.tendencia === "BAIXA") pontosPut += 2;
   }
 
-  // 2. Breakout com volume e Bollinger
-  const limiteBreakout = (bandasBollinger.superior - bandasBollinger.inferior) * 0.1;
-  
-  if (close > (bandasBollinger.superior + limiteBreakout) && volumeRelativo > 1.8) {
-    return "CALL";
-  }
-  
-  if (close < (bandasBollinger.inferior - limiteBreakout) && volumeRelativo > 1.8) {
-    return "PUT";
+  // 2. Volume e volatilidade
+  if (volumeRelativo > CONFIG.LIMIARES.VOLUME_IMPULSO) {
+    if (tendencia.tendencia.includes("ALTA")) pontosCall += 2;
+    if (tendencia.tendencia.includes("BAIXA")) pontosPut += 2;
+  } else if (volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) {
+    pontosCall += 1;
+    pontosPut += 1;
   }
 
-  // 3. Divergências com OBV
+  // 3. Posicionamento de preço
+  if (close > vwap && close > bandasBollinger.medio) pontosCall += 2;
+  if (close < vwap && close < bandasBollinger.medio) pontosPut += 2;
+  
+  // 4. Indicadores de momentum
+  if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD && stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD) pontosCall += 1;
+  if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT && stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT) pontosPut += 1;
+  
+  // 5. Divergências
   if (divergencias.divergenciaRSI) {
-    if (divergencias.tipoDivergencia === "ALTA" && state.obv > 0) {
-      return "CALL";
-    }
-    
-    if (divergencias.tipoDivergencia === "BAIXA" && state.obv < 0) {
-      return "PUT";
-    }
+    if (divergencias.tipoDivergencia === "ALTA") pontosCall += 2;
+    if (divergencias.tipoDivergencia === "BAIXA") pontosPut += 2;
   }
 
-  // 4. Reversão com múltiplos indicadores
-  if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD && stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD && 
-      close > vwap && macd.histograma > 0 && close > emaCurta) {
+  // 6. SuperTrend
+  if (superTrend.direcao > 0) pontosCall += 1;
+  if (superTrend.direcao < 0) pontosPut += 1;
+
+  // 7. MACD
+  if (macd.histograma > 0) pontosCall += 1;
+  if (macd.histograma < 0) pontosPut += 1;
+
+  // Penalização por mercado lateral
+  if (lateral) {
+    pontosCall = Math.max(0, pontosCall - 2);
+    pontosPut = Math.max(0, pontosPut - 2);
+  }
+
+  // Determinar sinal com base na pontuação
+  if (pontosCall >= pontosMinimos && pontosCall > pontosPut) {
     return "CALL";
   }
   
-  if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT && stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT && 
-      close < vwap && macd.histograma < 0 && close < emaCurta) {
+  if (pontosPut >= pontosMinimos && pontosPut > pontosCall) {
     return "PUT";
   }
   
@@ -806,19 +830,30 @@ async function analisarMercado() {
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
-    // Aplicar cooldown
-    if (sinal !== "ESPERAR" && state.cooldown <= 0) {
-      state.cooldown = 3;
+    // Aplicar cooldown dinâmico baseado em volatilidade
+    const score = calcularScore(sinal, indicadores, divergencias);
+    const now = new Date();
+    
+    if (sinal !== "ESPERAR") {
+      const volatilidade = state.atrGlobal / velaAtual.close;
+      
+      if (volatilidade > 0.02) {
+        state.cooldown = CONFIG.COOLDOWN_TIMES.HIGH_VOLATILITY;
+      } else if (volatilidade > 0.01) {
+        state.cooldown = CONFIG.COOLDOWN_TIMES.MEDIUM_VOLATILITY;
+      } else {
+        state.cooldown = CONFIG.COOLDOWN_TIMES.LOW_VOLATILITY;
+      }
+      
+      state.lastActionTime = now;
     } else if (state.cooldown > 0) {
       state.cooldown--;
       sinal = "ESPERAR";
     }
 
-    const score = calcularScore(sinal, indicadores, divergencias);
-
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
-    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
+    state.ultimaAtualizacao = now.toLocaleTimeString("pt-BR");
 
     atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
 
