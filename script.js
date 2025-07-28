@@ -1,3 +1,4 @@
+
 // =============================================
 // CONFIGURAÇÕES GLOBAIS (OTIMIZADAS PARA CRYPTO IDX)
 // =============================================
@@ -42,7 +43,8 @@ const state = {
     inferior: 0,
     medio: 0
   },
-  lastActionTime: null
+  lastSignalTime: 0,
+  consecutiveSignalCount: 0
 };
 
 const CONFIG = {
@@ -84,8 +86,8 @@ const CONFIG = {
     ATR_LIMIAR: 0.025,
     LATERALIDADE_LIMIAR: 0.008,
     VOLUME_ALERTA: 1.5,
-    VOLUME_IMPULSO: 2.0,
-    MIN_CONFIRMATIONS: 3
+    MIN_COOLDOWN: 3,
+    MAX_CONSECUTIVE_SIGNALS: 2
   },
   PESOS: {
     RSI: 1.7,
@@ -97,11 +99,6 @@ const CONFIG = {
     VOLUME: 1.5,
     VWAP: 1.3,
     BOLLINGER: 1.4
-  },
-  COOLDOWN_TIMES: {
-    HIGH_VOLATILITY: 2,
-    MEDIUM_VOLATILITY: 3,
-    LOW_VOLATILITY: 5
   }
 };
 
@@ -116,7 +113,7 @@ let currentKeyIndex = 0;
 let errorCount = 0;
 
 // =============================================
-// SISTEMA DE TENDÊNCIA OTIMIZADO (COM EMA50)
+// SISTEMA DE TENDÊNCIA OTIMIZADO
 // =============================================
 function avaliarTendencia(ema5, ema13, ema50) {
   if (ema5 === null || ema13 === null || ema50 === null) {
@@ -145,58 +142,78 @@ function avaliarTendencia(ema5, ema13, ema50) {
 }
 
 // =============================================
-// DETECÇÃO DE LATERALIDADE (OTIMIZADA)
+// DETECÇÃO DE LATERALIDADE MELHORADA
 // =============================================
 function detectarLateralidade(closes, periodo = CONFIG.PERIODOS.ANALISE_LATERAL, limiar = CONFIG.LIMIARES.LATERALIDADE_LIMIAR) {
   if (closes.length < periodo) return false;
   
   let countLaterais = 0;
+  const volatilidades = [];
+  
   for (let i = closes.length - 1; i > closes.length - periodo; i--) {
     if (i === 0) break;
     const variacao = Math.abs((closes[i] - closes[i-1]) / closes[i-1]);
+    volatilidades.push(variacao);
     if (variacao < limiar) countLaterais++;
   }
   
+  // Calcular desvio padrão das volatilidades
+  const mediaVol = volatilidades.reduce((a, b) => a + b, 0) / volatilidades.length;
+  const desvios = volatilidades.map(v => Math.pow(v - mediaVol, 2));
+  const desvioPadrao = Math.sqrt(desvios.reduce((a, b) => a + b, 0) / desvios.length);
+  
   state.contadorLaterais = countLaterais;
-  return countLaterais > periodo * 0.7;
+  
+  // Lateralidade confirmada se 70% das velas estiverem abaixo do limiar E baixa volatilidade
+  return countLaterais > periodo * 0.7 && desvioPadrao < limiar * 0.5;
 }
 
 // =============================================
-// CÁLCULO DE SUPORTE/RESISTÊNCIA
+// CÁLCULO DE SUPORTE/RESISTÊNCIA DINÂMICO
 // =============================================
 function calcularZonasPreco(dados, periodo = 50) {
   if (dados.length < periodo) periodo = dados.length;
+  
   const slice = dados.slice(-periodo);
   const highs = slice.map(v => v.high);
   const lows = slice.map(v => v.low);
+  const closes = slice.map(v => v.close);
+  
+  // Calcular níveis com média ponderada
+  const resistencia = (Math.max(...highs) * 0.6 + calcularMedia.simples(highs, highs.length) * 0.4);
+  const suporte = (Math.min(...lows) * 0.6 + calcularMedia.simples(lows, lows.length) * 0.4);
+  
   return {
-    resistencia: Math.max(...highs),
-    suporte: Math.min(...lows),
-    pivot: (Math.max(...highs) + Math.min(...lows) + dados[dados.length-1].close) / 3
+    resistencia,
+    suporte,
+    pivot: (resistencia + suporte + closes[closes.length-1]) / 3
   };
 }
 
 // =============================================
-// NOVOS INDICADORES PARA CRIPTO
+// INDICADORES PARA CRIPTO (OTIMIZADOS)
 // =============================================
 
-// 1. Volume Relativo
+// 1. Volume Relativo com suavização
 function calcularVolumeRelativo(volumes, periodo = CONFIG.PERIODOS.VOLUME_LOOKBACK) {
   if (volumes.length < periodo) return 0;
   
   const slice = volumes.slice(-periodo);
   const mediaVolume = calcularMedia.simples(slice, periodo);
-  const ultimoVolume = volumes[volumes.length - 1];
+  const ultimosVolumes = volumes.slice(-3);
+  const volumeMedioRecente = calcularMedia.simples(ultimosVolumes, 3);
   
-  return ultimoVolume / mediaVolume;
+  return volumeMedioRecente / mediaVolume;
 }
 
-// 2. On-Balance Volume (OBV)
+// 2. On-Balance Volume (OBV) com ajuste
 function calcularOBV(closes, volumes) {
   if (closes.length < 2) return 0;
   
   let obv = state.obv || 0;
-  for (let i = Math.max(1, closes.length - 10); i < closes.length; i++) {
+  const startIdx = Math.max(1, closes.length - 5); // Considerar apenas últimos 5 períodos
+  
+  for (let i = startIdx; i < closes.length; i++) {
     if (closes[i] > closes[i-1]) {
       obv += volumes[i];
     } else if (closes[i] < closes[i-1]) {
@@ -206,7 +223,7 @@ function calcularOBV(closes, volumes) {
   return obv;
 }
 
-// 3. Volume Weighted Average Price (VWAP)
+// 3. VWAP com verificação de dados
 function calcularVWAP(dados, periodo = CONFIG.PERIODOS.VWAP) {
   if (dados.length < periodo) return 0;
   
@@ -215,12 +232,15 @@ function calcularVWAP(dados, periodo = CONFIG.PERIODOS.VWAP) {
   
   const slice = dados.slice(-periodo);
   slice.forEach(v => {
+    // Verificar dados válidos
+    if (!v.high || !v.low || !v.close || !v.volume) return;
+    
     const tp = (v.high + v.low + v.close) / 3;
     tpTotal += tp * v.volume;
     volumeTotal += v.volume;
   });
   
-  return tpTotal / volumeTotal;
+  return volumeTotal > 0 ? tpTotal / volumeTotal : 0;
 }
 
 // 4. Bandas de Bollinger
@@ -245,7 +265,7 @@ function calcularBandasBollinger(closes, periodo = CONFIG.PERIODOS.BOLLINGER, de
 }
 
 // =============================================
-// GERADOR DE SINAIS OTIMIZADO (VERSÃO MELHORADA)
+// GERADOR DE SINAIS OTIMIZADO (MAIS ASSERTIVO)
 // =============================================
 function gerarSinal(indicadores, divergencias, lateral) {
   const {
@@ -263,63 +283,91 @@ function gerarSinal(indicadores, divergencias, lateral) {
     bandasBollinger
   } = indicadores;
 
-  let pontosCall = 0;
-  let pontosPut = 0;
-  const pontosMinimos = CONFIG.LIMIARES.MIN_CONFIRMATIONS;
-
-  // 1. Tendência (Peso máximo)
-  if (tendencia.forca > 80) {
-    if (tendencia.tendencia === "FORTE_ALTA") pontosCall += 3;
-    if (tendencia.tendencia === "FORTE_BAIXA") pontosPut += 3;
-  } else if (tendencia.forca > 45) {
-    if (tendencia.tendencia === "ALTA") pontosCall += 2;
-    if (tendencia.tendencia === "BAIXA") pontosPut += 2;
+  // 1. Tendência forte com confirmação de múltiplos indicadores
+  if (tendencia.forca > 80 && volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) {
+    const confirmacaoAlta = 
+      close > emaMedia &&
+      close > vwap &&
+      close > bandasBollinger.medio &&
+      superTrend.direcao > 0 &&
+      macd.histograma > 0;
+      
+    const confirmacaoBaixa = 
+      close < emaMedia &&
+      close < vwap &&
+      close < bandasBollinger.medio &&
+      superTrend.direcao < 0 &&
+      macd.histograma < 0;
+    
+    if (tendencia.tendencia.includes("ALTA") && confirmacaoAlta) {
+      return "CALL";
+    }
+    if (tendencia.tendencia.includes("BAIXA") && confirmacaoBaixa) {
+      return "PUT";
+    }
   }
 
-  // 2. Volume e volatilidade
-  if (volumeRelativo > CONFIG.LIMIARES.VOLUME_IMPULSO) {
-    if (tendencia.tendencia.includes("ALTA")) pontosCall += 2;
-    if (tendencia.tendencia.includes("BAIXA")) pontosPut += 2;
-  } else if (volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) {
-    pontosCall += 1;
-    pontosPut += 1;
-  }
-
-  // 3. Posicionamento de preço
-  if (close > vwap && close > bandasBollinger.medio) pontosCall += 2;
-  if (close < vwap && close < bandasBollinger.medio) pontosPut += 2;
+  // 2. Breakout com confirmação de volume e volatilidade
+  const bandaWidth = bandasBollinger.superior - bandasBollinger.inferior;
+  const limiteBreakout = bandaWidth * 0.1;
   
-  // 4. Indicadores de momentum
-  if (rsi < CONFIG.LIMIARES.RSI_OVERSOLD && stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD) pontosCall += 1;
-  if (rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT && stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT) pontosPut += 1;
-  
-  // 5. Divergências
-  if (divergencias.divergenciaRSI) {
-    if (divergencias.tipoDivergencia === "ALTA") pontosCall += 2;
-    if (divergencias.tipoDivergencia === "BAIXA") pontosPut += 2;
-  }
-
-  // 6. SuperTrend
-  if (superTrend.direcao > 0) pontosCall += 1;
-  if (superTrend.direcao < 0) pontosPut += 1;
-
-  // 7. MACD
-  if (macd.histograma > 0) pontosCall += 1;
-  if (macd.histograma < 0) pontosPut += 1;
-
-  // Penalização por mercado lateral
-  if (lateral) {
-    pontosCall = Math.max(0, pontosCall - 2);
-    pontosPut = Math.max(0, pontosPut - 2);
-  }
-
-  // Determinar sinal com base na pontuação
-  if (pontosCall >= pontosMinimos && pontosCall > pontosPut) {
+  if (close > (bandasBollinger.superior + limiteBreakout) && 
+      volumeRelativo > 1.8 &&
+      state.atrGlobal > CONFIG.LIMIARES.ATR_LIMIAR) {
     return "CALL";
   }
   
-  if (pontosPut >= pontosMinimos && pontosPut > pontosCall) {
+  if (close < (bandasBollinger.inferior - limiteBreakout) && 
+      volumeRelativo > 1.8 &&
+      state.atrGlobal > CONFIG.LIMIARES.ATR_LIMIAR) {
     return "PUT";
+  }
+
+  // 3. Divergências com confirmação de preço
+  if (divergencias.divergenciaRSI) {
+    const suporteConfirmado = close > state.suporteKey * 0.998;
+    const resistenciaConfirmado = close < state.resistenciaKey * 1.002;
+    
+    if (divergencias.tipoDivergencia === "ALTA" && suporteConfirmado && close > emaCurta) {
+      return "CALL";
+    }
+    
+    if (divergencias.tipoDivergencia === "BAIXA" && resistenciaConfirmado && close < emaCurta) {
+      return "PUT";
+    }
+  }
+
+  // 4. Reversão com múltiplas confirmações
+  const rsiOversold = rsi < CONFIG.LIMIARES.RSI_OVERSOLD;
+  const rsiOverbought = rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT;
+  const stochOversold = stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD;
+  const stochOverbought = stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT;
+  
+  if (rsiOversold && stochOversold && 
+      close > vwap && 
+      macd.histograma > 0 && 
+      macd.histograma > macd.sinalLinha * 1.2 && 
+      close > emaCurta &&
+      !lateral) {
+    return "CALL";
+  }
+  
+  if (rsiOverbought && stochOverbought && 
+      close < vwap && 
+      macd.histograma < 0 && 
+      macd.histograma < macd.sinalLinha * 1.2 && 
+      close < emaCurta &&
+      !lateral) {
+    return "PUT";
+  }
+  
+  // 5. Estratégia de rompimento de lateralidade
+  if (lateral && state.contadorLaterais > 15) {
+    const bandaWidthPercent = bandaWidth / bandasBollinger.medio;
+    if (bandaWidthPercent < 0.03 && volumeRelativo > 2) {
+      if (close > bandasBollinger.medio * 1.005) return "CALL";
+      if (close < bandasBollinger.medio * 0.995) return "PUT";
+    }
   }
   
   return "ESPERAR";
@@ -333,22 +381,62 @@ function calcularScore(sinal, indicadores, divergencias) {
 
   const fatores = {
     alinhamentoTendencia: sinal === "CALL" && indicadores.tendencia.tendencia.includes("ALTA") ||
-                          sinal === "PUT" && indicadores.tendencia.tendencia.includes("BAIXA") ? 25 : 0,
+                          sinal === "PUT" && indicadores.tendencia.tendencia.includes("BAIXA") ? 
+                          Math.min(25, indicadores.tendencia.forca / 4) : 0,
     divergencia: divergencias.divergenciaRSI ? 20 : 0,
     volume: indicadores.volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA ? 15 : 0,
     vwap: sinal === "CALL" && indicadores.close > indicadores.vwap ? 10 : 
            sinal === "PUT" && indicadores.close < indicadores.vwap ? 10 : 0,
     bollinger: sinal === "CALL" && indicadores.close > indicadores.bandasBollinger.medio ? 8 :
                sinal === "PUT" && indicadores.close < indicadores.bandasBollinger.medio ? 8 : 0,
-    obv: (sinal === "CALL" && state.obv > 0) || (sinal === "PUT" && state.obv < 0) ? 7 : 0
+    obv: (sinal === "CALL" && state.obv > 0) || (sinal === "PUT" && state.obv < 0) ? 7 : 0,
+    volatilidade: state.atrGlobal > CONFIG.LIMIARES.ATR_LIMIAR ? 5 : -5
   };
   
   score += Object.values(fatores).reduce((sum, val) => sum + val, 0);
   
   // Penalizar lateralidade prolongada
-  if (state.contadorLaterais > 5) score = Math.max(0, score - 15);
+  if (state.contadorLaterais > 10) score = Math.max(0, score - 20);
   
-  return Math.min(100, Math.max(0, score));
+  // Aumentar confiança em tendências fortes
+  if (indicadores.tendencia.forca > 80) score = Math.min(100, score + 10);
+  
+  // Reduzir confiança próximo a suporte/resistência
+  const distanciaSuporte = Math.abs(indicadores.close - state.suporteKey) / state.suporteKey;
+  const distanciaResistencia = Math.abs(indicadores.close - state.resistenciaKey) / state.resistenciaKey;
+  
+  if (distanciaSuporte < 0.005 || distanciaResistencia < 0.005) {
+    score = Math.max(0, score - 15);
+  }
+  
+  return Math.min(100, Math.max(0, Math.round(score)));
+}
+
+// =============================================
+// GERENCIAMENTO DE SINAIS CONSECUTIVOS
+// =============================================
+function gerenciarSinaisConsecutivos(sinal) {
+  const agora = Date.now();
+  const tempoDesdeUltimoSinal = (agora - state.lastSignalTime) / 60000; // em minutos
+  
+  // Resetar contador se passou mais de 10 minutos
+  if (tempoDesdeUltimoSinal > 10) {
+    state.consecutiveSignalCount = 0;
+  }
+  
+  if (sinal !== "ESPERAR" && sinal === state.ultimoSinal) {
+    state.consecutiveSignalCount = (state.consecutiveSignalCount || 0) + 1;
+    
+    // Limitar sinais consecutivos do mesmo tipo
+    if (state.consecutiveSignalCount > CONFIG.LIMIARES.MAX_CONSECUTIVE_SIGNALS) {
+      return "ESPERAR";
+    }
+  } else {
+    state.consecutiveSignalCount = 1;
+  }
+  
+  state.lastSignalTime = agora;
+  return sinal;
 }
 
 // =============================================
@@ -400,7 +488,6 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
     forcaElement.textContent = `${forcaTendencia}%`;
   }
   
-  // Atualizar hora da última atualização
   const atualizacaoElement = document.getElementById("ultima-atualizacao");
   if (atualizacaoElement) {
     atualizacaoElement.textContent = state.ultimaAtualizacao;
@@ -746,7 +833,7 @@ function detectarDivergencias(closes, rsis, highs, lows) {
 }
 
 // =============================================
-// CORE DO SISTEMA (COM NOVOS INDICADORES)
+// CORE DO SISTEMA COM GESTÃO DE SINAIS
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
@@ -795,12 +882,10 @@ async function analisarMercado() {
     
     // Preencher histórico de RSI
     if (state.rsiHistory.length === 0) {
-      state.rsiHistory = [];
       for (let i = CONFIG.PERIODOS.RSI; i < closes.length; i++) {
         state.rsiHistory.push(calcularRSI(closes.slice(0, i+1)));
       }
     } else {
-      // Atualizar apenas o último valor
       state.rsiHistory.push(calcularRSI(closes));
       if (state.rsiHistory.length > 100) state.rsiHistory.shift();
     }
@@ -830,30 +915,21 @@ async function analisarMercado() {
 
     let sinal = gerarSinal(indicadores, divergencias, lateral);
     
-    // Aplicar cooldown dinâmico baseado em volatilidade
-    const score = calcularScore(sinal, indicadores, divergencias);
-    const now = new Date();
+    // Gerenciar cooldown e sinais consecutivos
+    sinal = gerenciarSinaisConsecutivos(sinal);
     
-    if (sinal !== "ESPERAR") {
-      const volatilidade = state.atrGlobal / velaAtual.close;
-      
-      if (volatilidade > 0.02) {
-        state.cooldown = CONFIG.COOLDOWN_TIMES.HIGH_VOLATILITY;
-      } else if (volatilidade > 0.01) {
-        state.cooldown = CONFIG.COOLDOWN_TIMES.MEDIUM_VOLATILITY;
-      } else {
-        state.cooldown = CONFIG.COOLDOWN_TIMES.LOW_VOLATILITY;
-      }
-      
-      state.lastActionTime = now;
+    if (sinal !== "ESPERAR" && state.cooldown <= 0) {
+      state.cooldown = CONFIG.LIMIARES.MIN_COOLDOWN;
     } else if (state.cooldown > 0) {
       state.cooldown--;
       sinal = "ESPERAR";
     }
 
+    const score = calcularScore(sinal, indicadores, divergencias);
+
     state.ultimoSinal = sinal;
     state.ultimoScore = score;
-    state.ultimaAtualizacao = now.toLocaleTimeString("pt-BR");
+    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
 
     atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia);
 
@@ -984,107 +1060,13 @@ function sincronizarTimer() {
 }
 
 // =============================================
-// INICIALIZAÇÃO (COM NOVOS ELEMENTOS)
+// INICIALIZAÇÃO
 // =============================================
 function iniciarAplicativo() {
-  // Criar interface
-  const container = document.createElement('div');
-  container.style = "font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 20px auto; padding: 25px; background: #1e1f29; border-radius: 15px; color: #f5f6fa; box-shadow: 0 8px 32px rgba(0,0,0,0.3);";
-  container.innerHTML = `
-    <h1 style="text-align: center; color: #6c5ce7; margin-bottom: 30px; font-size: 28px;">
-      <i class="fab fa-bitcoin"></i> Robô de Trading CRYPTO IDX
-    </h1>
-    
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 25px; margin-bottom: 30px;">
-      <div id="comando" style="font-size: 32px; font-weight: 700; padding: 25px; border-radius: 12px; text-align: center; background: #2c2d3a; display: flex; align-items: center; justify-content: center; min-height: 120px;">
-        --
-      </div>
-      
-      <div style="display: flex; flex-direction: column; justify-content: center; background: #2c2d3a; padding: 20px; border-radius: 12px;">
-        <div id="score" style="font-size: 22px; font-weight: 600; margin-bottom: 15px; text-align: center;">--</div>
-        
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-          <div style="text-align: center;">
-            <div style="font-size: 14px; opacity: 0.8;">Atualização</div>
-            <div id="hora" style="font-size: 18px; font-weight: 600;">--:--:--</div>
-          </div>
-          
-          <div style="text-align: center;">
-            <div style="font-size: 14px; opacity: 0.8;">Próxima Análise</div>
-            <div id="timer" style="font-size: 18px; font-weight: 600;">0:60</div>
-          </div>
-        </div>
-      </div>
-    </div>
-    
-    <div style="background: #2c2d3a; padding: 20px; border-radius: 12px; margin-bottom: 25px;">
-      <h3 style="margin-top: 0; margin-bottom: 15px; color: #6c5ce7; display: flex; align-items: center;">
-        <i class="fas fa-chart-line"></i> Tendência: 
-        <span id="tendencia" style="margin-left: 8px;">--</span> 
-        <span id="forca-tendencia" style="margin-left: 5px;">--</span>%
-      </h3>
-      
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-        <div style="background: #3a3b4a; padding: 15px; border-radius: 8px;">
-          <h4 style="margin-top: 0; margin-bottom: 10px; color: #a29bfe;">Últimos Sinais</h4>
-          <ul id="ultimos" style="list-style: none; padding: 0; margin: 0;"></ul>
-        </div>
-        
-        <div style="background: #3a3b4a; padding: 15px; border-radius: 8px;">
-          <h4 style="margin-top: 0; margin-bottom: 10px; color: #a29bfe;">Indicadores</h4>
-          <ul id="criterios" style="list-style: none; padding: 0; margin: 0;"></ul>
-        </div>
-      </div>
-    </div>
-    
-    <div style="text-align: center; font-size: 14px; opacity: 0.7; padding-top: 15px; border-top: 1px solid #3a3b4a;">
-      CRYPTO IDX - Análise em tempo real | Atualizado: <span id="ultima-atualizacao">${new Date().toLocaleTimeString()}</span>
-    </div>
-  `;
-  document.body.appendChild(container);
-  document.body.style.backgroundColor = "#13141a";
-  document.body.style.margin = "0";
-  document.body.style.padding = "20px";
-  
-  // Adicionar Font Awesome
-  const fontAwesome = document.createElement('link');
-  fontAwesome.rel = 'stylesheet';
-  fontAwesome.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css';
-  document.head.appendChild(fontAwesome);
-
-  // Adicionar estilos dinâmicos
-  const style = document.createElement('style');
-  style.textContent = `
-    .call { 
-      background: linear-gradient(135deg, #00b894, #00cec9) !important; 
-      color: white !important;
-      box-shadow: 0 4px 20px rgba(0, 184, 148, 0.3);
-    }
-    .put { 
-      background: linear-gradient(135deg, #ff7675, #d63031) !important; 
-      color: white !important;
-      box-shadow: 0 4px 20px rgba(255, 118, 117, 0.3);
-    }
-    .esperar { 
-      background: linear-gradient(135deg, #0984e3, #6c5ce7) !important; 
-      color: white !important;
-      box-shadow: 0 4px 20px rgba(108, 92, 231, 0.3);
-    }
-    .erro { 
-      background: #fdcb6e !important; 
-      color: #2d3436 !important;
-    }
-    body {
-      transition: background 0.5s ease;
-    }
-    #comando {
-      transition: all 0.5s cubic-bezier(0.68, -0.55, 0.27, 1.55);
-    }
-  `;
-  document.head.appendChild(style);
-
-  // Iniciar processos
+  // Atualizar relógio a cada segundo
   setInterval(atualizarRelogio, 1000);
+  
+  // Sincronizar timer e iniciar análises
   sincronizarTimer();
   
   // Primeira análise
