@@ -2,12 +2,117 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <title>TX1 👨🏽‍💻💹</title>
+  <title>TX1 👨🏽‍💻💹 - BITCOIN CASH</title>
   <link rel="stylesheet" href="style.css">
+  <style>
+    body {
+      background: linear-gradient(135deg, #1e3c72, #2a5298);
+      color: white;
+      font-family: 'Arial', sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: rgba(0, 0, 0, 0.7);
+      border-radius: 15px;
+      padding: 20px;
+      box-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
+    }
+    h1 {
+      text-align: center;
+      color: #00ff00;
+      text-shadow: 0 0 10px #00ff00;
+      margin-bottom: 20px;
+    }
+    .painel-central {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .coluna-esquerda, .coluna-direita {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 15px;
+      border-radius: 10px;
+    }
+    #comando {
+      font-size: 24px;
+      font-weight: bold;
+      padding: 5px 10px;
+      border-radius: 5px;
+    }
+    .call {
+      background: #00ff00;
+      color: black;
+      animation: pulse 1s infinite;
+    }
+    .put {
+      background: #ff0000;
+      color: white;
+      animation: pulse 1s infinite;
+    }
+    .esperar {
+      background: #ffff00;
+      color: black;
+    }
+    .erro {
+      background: #ff0000;
+      color: white;
+    }
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.7; }
+      100% { opacity: 1; }
+    }
+    button {
+      background: #00ff00;
+      color: black;
+      border: none;
+      padding: 10px 20px;
+      margin: 5px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover {
+      background: #00cc00;
+    }
+    #historico {
+      font-weight: bold;
+      color: #00ff00;
+    }
+    .grafico {
+      border-radius: 10px;
+      margin-top: 20px;
+    }
+    ul {
+      list-style: none;
+      padding: 0;
+    }
+    li {
+      margin: 5px 0;
+      padding: 5px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+    }
+    #score {
+      font-weight: bold;
+      font-size: 18px;
+    }
+    #timer {
+      color: #00ff00;
+      font-weight: bold;
+    }
+    #hora {
+      color: #00ff00;
+    }
+  </style>
 </head>
 <body>
   <div class="container">
-    <h1>TX1 👨🏽‍💻💹</h1>
+    <h1>TX1 👨🏽‍💻💹 - BITCOIN CASH (BCH)</h1>
     <div class="painel-central">
       <div class="coluna-esquerda">
         <p>Comando Atual: <span id="comando" class="esperar">ESPERAR</span></p>
@@ -15,8 +120,10 @@
         <p>Próxima Leitura em: <span id="timer">60</span>s</p>
         <p>Última Análise: <span id="hora">--:--:--</span></p>
         <div>
-          <h3>Critérios Técnicos</h3>
-          <ul id="criterios"></ul>
+          <h3>Critérios Técnicos - BITCOIN CASH</h3>
+          <ul id="criterios">
+            <li>Carregando análise do Bitcoin Cash (BCH)...</li>
+          </ul>
         </div>
         <div>
           <button onclick="registrar('WIN')">WIN</button>
@@ -25,16 +132,85 @@
         </div>
       </div>
       <div class="coluna-direita">
-        <h3>Últimos Sinais</h3>
-        <ul id="ultimos"></ul>
+        <h3>Últimos Sinais - BCH</h3>
+        <ul id="ultimos">
+          <li>Aguardando primeira análise...</li>
+        </ul>
       </div>
     </div>
-    <!-- ALTERAÇÃO AQUI: símbolo trocado para BTCUSD -->
-    <iframe class="grafico" src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=1&theme=dark"
-      width="100%" height="350" frameborder="0"></iframe>
+    <!-- GRÁFICO DO BITCOIN CASH (BCH) -->
+    <iframe class="grafico" src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BCHUSDT&interval=1&theme=dark&style=1"
+      width="100%" height="400" frameborder="0"></iframe>
   </div>
   <audio id="som-call" src="https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg" preload="auto"></audio>
   <audio id="som-put" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg" preload="auto"></audio>
+  <script>
+    // Funções básicas para o histórico
+    let wins = 0;
+    let losses = 0;
+    
+    function registrar(resultado) {
+      if (resultado === 'WIN') {
+        wins++;
+        alert('🎉 WIN registrado!');
+      } else if (resultado === 'LOSS') {
+        losses++;
+        alert('💔 LOSS registrado!');
+      }
+      
+      document.getElementById('historico').textContent = `${wins} WIN / ${losses} LOSS`;
+    }
+    
+    // Função para atualizar a interface (será usada pelo script principal)
+    function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
+      const comandoElement = document.getElementById("comando");
+      if (comandoElement) {
+        comandoElement.textContent = sinal;
+        comandoElement.className = sinal.toLowerCase();
+        
+        if (sinal === "CALL") {
+          comandoElement.textContent = "CALL 📈";
+          document.getElementById("som-call").play();
+        } else if (sinal === "PUT") {
+          comandoElement.textContent = "PUT 📉";
+          document.getElementById("som-put").play();
+        } else if (sinal === "ESPERAR") {
+          comandoElement.textContent = "ESPERAR ✋";
+        }
+      }
+      
+      const scoreElement = document.getElementById("score");
+      if (scoreElement) {
+        scoreElement.textContent = `${score}%`;
+        if (score >= 75) {
+          scoreElement.style.color = '#00ff00';
+        } else if (score >= 60) {
+          scoreElement.style.color = '#ffff00';
+        } else {
+          scoreElement.style.color = '#ff0000';
+        }
+      }
+    }
+    
+    // Função para formatar timer
+    function formatarTimer(segundos) {
+      return `0:${segundos.toString().padStart(2, '0')}`;
+    }
+    
+    // Timer básico (será substituído pelo script principal)
+    let timer = 60;
+    setInterval(() => {
+      timer--;
+      if (timer <= 0) timer = 60;
+      document.getElementById("timer").textContent = formatarTimer(timer);
+    }, 1000);
+    
+    // Atualizar relógio
+    setInterval(() => {
+      const now = new Date();
+      document.getElementById("hora").textContent = now.toLocaleTimeString("pt-BR");
+    }, 1000);
+  </script>
   <script src="script.js"></script>
 </body>
 </html>
