@@ -79,18 +79,18 @@ const CONFIG = {
     VWAP: 20
   },
   LIMIARES: {
-    SCORE_ALTO: 70,
-    SCORE_MEDIO: 55,
-    RSI_OVERBOUGHT: 80,
-    RSI_OVERSOLD: 20,
-    STOCH_OVERBOUGHT: 85,
-    STOCH_OVERSOLD: 15,
-    VARIACAO_LATERAL: 0.012,
-    ATR_LIMIAR: 0.035,
-    LATERALIDADE_LIMIAR: 0.012,
-    VOLUME_ALERTA: 1.6,
-    MIN_COOLDOWN: 2,
-    MAX_CONSECUTIVE_SIGNALS: 2
+    SCORE_ALTO: 65,
+    SCORE_MEDIO: 50,
+    RSI_OVERBOUGHT: 75,
+    RSI_OVERSOLD: 25,
+    STOCH_OVERBOUGHT: 80,
+    STOCH_OVERSOLD: 20,
+    VARIACAO_LATERAL: 0.015,
+    ATR_LIMIAR: 0.04,
+    LATERALIDADE_LIMIAR: 0.015,
+    VOLUME_ALERTA: 1.4,
+    MIN_COOLDOWN: 1,
+    MAX_CONSECUTIVE_SIGNALS: 3
   }
 };
 
@@ -132,10 +132,18 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
     
     if (sinal === "CALL") {
       comandoElement.textContent = "CALL 📈";
-      document.getElementById("som-call").play();
+      try {
+        document.getElementById("som-call").play();
+      } catch (e) {
+        console.log("Erro ao reproduzir som CALL:", e);
+      }
     } else if (sinal === "PUT") {
       comandoElement.textContent = "PUT 📉";
-      document.getElementById("som-put").play();
+      try {
+        document.getElementById("som-put").play();
+      } catch (e) {
+        console.log("Erro ao reproduzir som PUT:", e);
+      }
     } else if (sinal === "ESPERAR") {
       comandoElement.textContent = "ESPERAR ✋";
     }
@@ -158,6 +166,14 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia) {
   if (tendenciaElement && forcaElement) {
     tendenciaElement.textContent = tendencia;
     forcaElement.textContent = `${Math.round(forcaTendencia)}%`;
+    
+    if (tendencia.includes("ALTA")) {
+      tendenciaElement.className = "indicator-value positive";
+    } else if (tendencia.includes("BAIXA")) {
+      tendenciaElement.className = "indicator-value negative";
+    } else {
+      tendenciaElement.className = "indicator-value neutral";
+    }
   }
 }
 
@@ -595,80 +611,102 @@ function detectarDivergencias(closes, rsis, highs, lows) {
 }
 
 // =============================================
-// SISTEMA DE SINAIS
+// SISTEMA DE SINAIS - CORRIGIDO
 // =============================================
 function calcularScoreDirecional(direcao, indicadores, divergencias) {
-  let score = 50;
+  let score = 50; // Base score mais alto
 
-  const { rsi, stoch, macd, close, emaCurta, emaMedia, tendencia, volumeRelativo, vwap, bandasBollinger } = indicadores;
+  const { rsi, stoch, macd, close, emaCurta, emaMedia, tendencia, volumeRelativo, vwap, bandasBollinger, superTrend } = indicadores;
 
+  // Tendência alinhada com direção - MAIS PERMISSIVO
   if ((direcao === 'ALTA' && tendencia.tendencia.includes('ALTA')) ||
       (direcao === 'BAIXA' && tendencia.tendencia.includes('BAIXA'))) {
-    score += Math.min(20, tendencia.forca / 5);
+    score += Math.min(25, tendencia.forca / 4); // Aumentado de 20 para 25
   }
 
+  // Indicadores técnicos - LIMIARES MAIS FLEXÍVEIS
   if (direcao === 'ALTA') {
-    if (rsi > 25 && rsi < 75) score += 8;
-    if (stoch.k > 20 && stoch.k < 85) score += 7;
-    if (macd.histograma > 0) score += 12;
-    if (close > emaCurta) score += 6;
-    if (close > vwap) score += 8;
-    if (close > bandasBollinger.medio) score += 6;
+    if (rsi > 30 && rsi < 80) score += 10; // Limiares mais amplos
+    if (stoch.k > 25 && stoch.k < 90) score += 8;
+    if (macd.histograma > -0.001) score += 15; // Mais permissivo
+    if (close > emaCurta) score += 8;
+    if (close > vwap) score += 10;
+    if (close > bandasBollinger.medio) score += 8;
+    if (superTrend.direcao > 0) score += 12; // Adicionado SuperTrend
   } else {
-    if (rsi < 75 && rsi > 25) score += 8;
-    if (stoch.k < 80 && stoch.k > 15) score += 7;
-    if (macd.histograma < 0) score += 12;
-    if (close < emaCurta) score += 6;
-    if (close < vwap) score += 8;
-    if (close < bandasBollinger.medio) score += 6;
+    if (rsi < 70 && rsi > 20) score += 10;
+    if (stoch.k < 75 && stoch.k > 10) score += 8;
+    if (macd.histograma < 0.001) score += 15;
+    if (close < emaCurta) score += 8;
+    if (close < vwap) score += 10;
+    if (close < bandasBollinger.medio) score += 8;
+    if (superTrend.direcao < 0) score += 12;
   }
 
-  if (volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA) score += 12;
+  // Volume - MAIS PERMISSIVO
+  if (volumeRelativo > 1.2) score += 10; // Reduzido de 1.6 para 1.2
 
+  // Divergências - SCORE MAIOR
   if (divergencias.divergenciaRSI) {
     if ((direcao === 'ALTA' && divergencias.tipoDivergencia === 'ALTA') ||
         (direcao === 'BAIXA' && divergencias.tipoDivergencia === 'BAIXA')) {
-      score += 15;
+      score += 20; // Aumentado de 15 para 20
     }
   }
 
-  if (tendencia.forca > 70) score += 8;
-  if (volumeRelativo > 2) score += 8;
+  // Bônus por força da tendência
+  if (tendencia.forca > 60) score += 10;
+  if (volumeRelativo > 1.8) score += 8;
 
-  return Math.min(100, Math.max(0, score));
+  return Math.min(100, Math.max(20, score)); // Mínimo 20 instead de 0
 }
 
 function calcularScore(sinal, indicadores, divergencias) {
-  if (sinal === "ESPERAR") return 0;
-  
-  const direcao = sinal === "CALL" ? "ALTA" : "BAIXA";
-  const score = calcularScoreDirecional(direcao, indicadores, divergencias);
-  
-  let scoreAjustado = score;
-  
-  if (sinal === "CALL") {
-    if (indicadores.close > indicadores.bandasBollinger.superior * 0.98) scoreAjustado += 5;
-    if (indicadores.superTrend.direcao > 0) scoreAjustado += 8;
-  } else {
-    if (indicadores.close < indicadores.bandasBollinger.inferior * 1.02) scoreAjustado += 5;
-    if (indicadores.superTrend.direcao < 0) scoreAjustado += 8;
+  if (sinal === "ESPERAR") {
+    // PARA "ESPERAR", calcular score base nos indicadores sem direção específica
+    let scoreNeutro = 50;
+    
+    const { rsi, stoch, macd, volumeRelativo, tendencia } = indicadores;
+    
+    // Indicadores em zonas neutras
+    if (rsi > 40 && rsi < 60) scoreNeutro += 10;
+    if (stoch.k > 40 && stoch.k < 60) scoreNeutro += 8;
+    if (Math.abs(macd.histograma) < 0.002) scoreNeutro += 8;
+    if (volumeRelativo > 0.8 && volumeRelativo < 1.5) scoreNeutro += 8;
+    if (tendencia.forca < 50) scoreNeutro += 8;
+    
+    return Math.min(60, Math.max(0, scoreNeutro)); // Limitado a 60 para ESPERAR
   }
   
-  return Math.min(100, Math.max(0, scoreAjustado));
+  const direcao = sinal === "CALL" ? "ALTA" : "BAIXA";
+  let score = calcularScoreDirecional(direcao, indicadores, divergencias);
+  
+  // Ajustes adicionais baseados no sinal específico
+  if (sinal === "CALL") {
+    if (indicadores.close > indicadores.bandasBollinger.superior * 0.98) score += 5;
+    if (indicadores.superTrend.direcao > 0) score += 10; // Aumentado de 8 para 10
+  } else {
+    if (indicadores.close < indicadores.bandasBollinger.inferior * 1.02) score += 5;
+    if (indicadores.superTrend.direcao < 0) score += 10;
+  }
+  
+  return Math.min(100, Math.max(30, score)); // Mínimo 30 para sinais direcionais
 }
 
 function gerenciarSinaisConsecutivos(sinal) {
   const agora = Date.now();
-  const tempoDesdeUltimoSinal = (agora - state.lastSignalTime) / 60000;
+  const tempoDesdeUltimoSinal = (agora - state.lastSignalTime) / 60000; // em minutos
   
-  if (tempoDesdeUltimoSinal > 10) {
+  // Reset se passou muito tempo
+  if (tempoDesdeUltimoSinal > 15) { // Aumentado de 10 para 15 minutos
     state.consecutiveSignalCount = 0;
   }
   
   if (sinal !== "ESPERAR" && sinal === state.ultimoSinal) {
     state.consecutiveSignalCount = (state.consecutiveSignalCount || 0) + 1;
     
-    if (state.consecutiveSignalCount > CONFIG.LIMIARES.MAX_CONSECUTIVE_SIGNALS) {
+    // MAIS PERMISSIVO - permite mais sinais consecutivos
+    if (state.consecutiveSignalCount > CONFIG.LIMIARES.MAX_CONSECUTIVE_SIGNALS + 1) {
       return "ESPERAR";
     }
   } else if (sinal !== "ESPERAR") {
@@ -680,66 +718,80 @@ function gerenciarSinaisConsecutivos(sinal) {
 }
 
 function gerarSinal(indicadores, divergencias, lateral) {
+  // CALCULAR SCORES BASE PRIMEIRO
   const scoreAlta = calcularScoreDirecional('ALTA', indicadores, divergencias);
   const scoreBaixa = calcularScoreDirecional('BAIXA', indicadores, divergencias);
   
-  const { rsi, stoch, macd, close, volumeRelativo, bandasBollinger, tendencia, superTrend } = indicadores;
+  const { rsi, stoch, macd, close, volumeRelativo, bandasBollinger, tendencia, superTrend, vwap, emaCurta, emaMedia } = indicadores;
 
+  // CONDIÇÕES BASE MAIS FLEXÍVEIS
   const condicoesBaseAlta = 
-    close > indicadores.vwap &&
-    macd.histograma > 0 &&
-    volumeRelativo > 1.0;
+    close > vwap * 0.995 && // Mais flexível
+    macd.histograma > -0.005 && // Mais permissivo
+    volumeRelativo > 0.8; // Volume mínimo reduzido
 
   const condicoesBaseBaixa = 
-    close < indicadores.vwap &&
-    macd.histograma < 0 &&
-    volumeRelativo > 1.0;
+    close < vwap * 1.005 &&
+    macd.histograma < 0.005 &&
+    volumeRelativo > 0.8;
 
-  if (tendencia.forca > 65) {
-    if (tendencia.tendencia.includes("ALTA") && scoreAlta >= 60 && condicoesBaseAlta) {
+  // 1. TENDÊNCIA FORTE - LIMIAR REDUZIDO
+  if (tendencia.forca > 50) { // Reduzido de 65 para 50
+    if (tendencia.tendencia.includes("ALTA") && scoreAlta >= 55 && condicoesBaseAlta) { // Score reduzido
       return "CALL";
     }
-    if (tendencia.tendencia.includes("BAIXA") && scoreBaixa >= 60 && condicoesBaseBaixa) {
+    if (tendencia.tendencia.includes("BAIXA") && scoreBaixa >= 55 && condicoesBaseBaixa) {
       return "PUT";
     }
   }
 
+  // 2. DIVERGÊNCIAS - SCORE REDUZIDO
   if (divergencias.divergenciaRSI) {
-    if (divergencias.tipoDivergencia === "ALTA" && scoreAlta >= 65 && condicoesBaseAlta) {
+    if (divergencias.tipoDivergencia === "ALTA" && scoreAlta >= 58 && condicoesBaseAlta) { // Reduzido de 65
       return "CALL";
     }
-    if (divergencias.tipoDivergencia === "BAIXA" && scoreBaixa >= 65 && condicoesBaseBaixa) {
+    if (divergencias.tipoDivergencia === "BAIXA" && scoreBaixa >= 58 && condicoesBaseBaixa) {
       return "PUT";
     }
   }
 
-  const rsiOversold = rsi < CONFIG.LIMIARES.RSI_OVERSOLD;
-  const rsiOverbought = rsi > CONFIG.LIMIARES.RSI_OVERBOUGHT;
-  const stochOversold = stoch.k < CONFIG.LIMIARES.STOCH_OVERSOLD;
-  const stochOverbought = stoch.k > CONFIG.LIMIARES.STOCH_OVERBOUGHT;
+  // 3. CONDIÇÕES EXTREMAS - LIMIARES MAIS FLEXÍVEIS
+  const rsiOversold = rsi < 25; // Aumentado de 20 para 25
+  const rsiOverbought = rsi > 75; // Reduzido de 80 para 75
+  const stochOversold = stoch.k < 20; // Aumentado de 15 para 20
+  const stochOverbought = stoch.k > 80; // Reduzido de 85 para 80
 
-  if (rsiOversold && stochOversold && scoreAlta >= 63 && !lateral) {
+  if (rsiOversold && stochOversold && scoreAlta >= 58 && !lateral) { // Score reduzido
     return "CALL";
   }
   
-  if (rsiOverbought && stochOverbought && scoreBaixa >= 63 && !lateral) {
+  if (rsiOverbought && stochOverbought && scoreBaixa >= 58 && !lateral) {
     return "PUT";
   }
 
-  if (lateral && volumeRelativo > 1.8) {
+  // 4. MERCADO LATERAL - MAIS PERMISSIVO
+  if (lateral) {
     const bandaWidth = (bandasBollinger.superior - bandasBollinger.inferior) / bandasBollinger.medio;
-    if (bandaWidth < 0.05) {
-      if (close > bandasBollinger.superior * 0.995 && scoreAlta >= 60) return "CALL";
-      if (close < bandasBollinger.inferior * 1.005 && scoreBaixa >= 60) return "PUT";
+    if (bandaWidth < 0.06) { // Limiar aumentado
+      if (close > bandasBollinger.superior * 0.99 && scoreAlta >= 55) return "CALL"; // Mais permissivo
+      if (close < bandasBollinger.inferior * 1.01 && scoreBaixa >= 55) return "PUT";
     }
   }
 
-  if (superTrend.direcao > 0 && scoreAlta >= 65 && condicoesBaseAlta) {
+  // 5. SUPERTREND - SCORE REDUZIDO
+  if (superTrend.direcao > 0 && scoreAlta >= 58 && condicoesBaseAlta) { // Reduzido de 65
     return "CALL";
   }
   
-  if (superTrend.direcao < 0 && scoreBaixa >= 65 && condicoesBaseBaixa) {
+  if (superTrend.direcao < 0 && scoreBaixa >= 58 && condicoesBaseBaixa) {
     return "PUT";
+  }
+
+  // 6. CONFIRMAÇÃO SIMPLES - NOVA CONDIÇÃO
+  const diffEma = emaCurta - emaMedia;
+  if (Math.abs(diffEma) > (close * 0.002)) { // Diferença significativa entre EMAs
+    if (diffEma > 0 && scoreAlta >= 56 && condicoesBaseAlta) return "CALL";
+    if (diffEma < 0 && scoreBaixa >= 56 && condicoesBaseBaixa) return "PUT";
   }
 
   return "ESPERAR";
@@ -907,6 +959,45 @@ async function analisarMercado() {
         <li>🔄 Lateral: ${lateral ? 'SIM' : 'NÃO'}</li>
         <li>💹 Volume: ${(state.volumeRelativo * 100).toFixed(0)}% ${state.volumeRelativo > CONFIG.LIMIARES.VOLUME_ALERTA ? '🚀' : ''}</li>
         <li>📊 VWAP: $${state.vwap.toFixed(2)}</li>
+      `;
+    }
+
+    // Atualizar indicadores técnicos
+    const indicadoresElement = document.getElementById("indicadores");
+    if (indicadoresElement) {
+      indicadoresElement.innerHTML = `
+        <div class="info-row">
+          <span class="info-label">RSI:</span>
+          <span class="info-value">${rsi.toFixed(1)}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">MACD:</span>
+          <span class="info-value">${macd.histograma > 0 ? '+' : ''}${macd.histograma.toFixed(4)}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Stochastic:</span>
+          <span class="info-value">${stoch.k.toFixed(1)}/${stoch.d.toFixed(1)}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Volume Relativo:</span>
+          <span class="info-value">${(state.volumeRelativo * 100).toFixed(0)}%</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Suporte:</span>
+          <span class="info-value">$${state.suporteKey.toFixed(2)}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Resistência:</span>
+          <span class="info-value">$${state.resistenciaKey.toFixed(2)}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">SuperTrend:</span>
+          <span class="info-value">${superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">ATR:</span>
+          <span class="info-value">${atr.toFixed(4)}</span>
+        </div>
       `;
     }
 
