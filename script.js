@@ -20,7 +20,8 @@ const state = {
   bandasBollinger: { superior: 0, inferior: 0, medio: 0 },
   lastSignalTime: 0,
   consecutiveSignalCount: 0,
-  qualidadeSinal: "BAIXA" // BAIXA, MEDIA, ALTA
+  qualidadeSinal: "BAIXA",
+  superTrendCache: []
 };
 
 const CONFIG = {
@@ -104,12 +105,18 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia, qualidade) 
       case "CALL":
         texto = `CALL 📈 (${qualidade})`;
         classe = "call";
-        try { document.getElementById("som-call")?.play(); } catch(e) {}
+        try { 
+          const som = document.getElementById("som-call");
+          if (som) som.play().catch(e => console.log("Erro ao tocar som:", e));
+        } catch(e) {}
         break;
       case "PUT":
         texto = `PUT 📉 (${qualidade})`;
         classe = "put";
-        try { document.getElementById("som-put")?.play(); } catch(e) {}
+        try { 
+          const som = document.getElementById("som-put");
+          if (som) som.play().catch(e => console.log("Erro ao tocar som:", e));
+        } catch(e) {}
         break;
       default:
         texto = "ESPERAR ✋";
@@ -119,7 +126,6 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia, qualidade) 
     comandoElement.textContent = texto;
     comandoElement.className = classe;
     
-    // Destacar sinais de alta qualidade
     if (qualidade === "ALTA") {
       comandoElement.style.border = "2px solid #00ff00";
       comandoElement.style.animation = "pulse 1s infinite";
@@ -186,7 +192,6 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   
   let gains = 0, losses = 0;
   
-  // Calcular ganhos e perdas iniciais
   for (let i = 1; i <= periodo; i++) {
     const diff = closes[i] - closes[i - 1];
     if (diff > 0) gains += diff;
@@ -196,7 +201,6 @@ function calcularRSI(closes, periodo = CONFIG.PERIODOS.RSI) {
   let avgGain = gains / periodo;
   let avgLoss = losses / periodo;
   
-  // Calcular RSI para pontos subsequentes
   for (let i = periodo + 1; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
     
@@ -232,7 +236,6 @@ function calcularStochastic(highs, lows, closes) {
       kValues.push(k);
     }
     
-    // Calcular %D (média móvel de %K)
     const periodoD = CONFIG.PERIODOS.STOCH_D;
     const dValues = [];
     for (let i = periodoD - 1; i < kValues.length; i++) {
@@ -245,6 +248,7 @@ function calcularStochastic(highs, lows, closes) {
       d: dValues[dValues.length - 1] || 50
     };
   } catch (e) {
+    console.error("Erro no Stochastic:", e);
     return { k: 50, d: 50 };
   }
 }
@@ -264,7 +268,7 @@ function calcularMACD(closes) {
       return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
     }
     
-    const startIdx = lenta - rapida;
+    const startIdx = Math.max(0, lenta - rapida);
     const macdLinha = emaRapida.slice(startIdx).map((val, idx) => val - emaLenta[idx]);
     
     if (macdLinha.length < sinal) {
@@ -281,16 +285,16 @@ function calcularMACD(closes) {
       sinalLinha: ultimoSinal
     };
   } catch (e) {
+    console.error("Erro no MACD:", e);
     return { histograma: 0, macdLinha: 0, sinalLinha: 0 };
   }
 }
 
-function calcularSuperTrend(dados) {
+function calcularATR(dados) {
   try {
-    const periodo = CONFIG.PERIODOS.SUPERTREND;
-    if (dados.length < periodo) return { direcao: 0, valor: dados[dados.length-1]?.close || 0 };
+    const periodo = CONFIG.PERIODOS.ATR;
+    if (!Array.isArray(dados) || dados.length < periodo + 1) return 0.01;
     
-    // Calcular ATR
     const trValues = [];
     for (let i = 1; i < dados.length; i++) {
       const tr = Math.max(
@@ -301,7 +305,19 @@ function calcularSuperTrend(dados) {
       trValues.push(tr);
     }
     
-    const atr = calcularMedia.simples(trValues.slice(-periodo), periodo) || 0.01;
+    return calcularMedia.simples(trValues.slice(-periodo), periodo) || 0.01;
+  } catch (e) {
+    console.error("Erro no ATR:", e);
+    return 0.01;
+  }
+}
+
+function calcularSuperTrend(dados) {
+  try {
+    const periodo = CONFIG.PERIODOS.SUPERTREND;
+    if (dados.length < periodo) return { direcao: 0, valor: dados[dados.length-1]?.close || 0 };
+    
+    const atr = calcularATR(dados);
     const current = dados[dados.length - 1];
     const hl2 = (current.high + current.low) / 2;
     
@@ -332,6 +348,7 @@ function calcularSuperTrend(dados) {
     
     return { direcao, valor: superTrend };
   } catch (e) {
+    console.error("Erro no SuperTrend:", e);
     return { direcao: 0, valor: dados[dados.length-1]?.close || 0 };
   }
 }
@@ -441,7 +458,7 @@ function calcularZonasPreco(dados) {
 // =============================================
 // SISTEMA DE SINAIS PARA TRADING REAL
 // =============================================
-function calcularScoreSinal(indicadores, divergencias, lateral) {
+function calcularScoreSinal(indicadores, lateral) {
   const { rsi, stoch, macd, close, tendencia, volumeRelativo, vwap, superTrend, emaCurta, emaMedia } = indicadores;
   
   let score = 50;
@@ -452,7 +469,7 @@ function calcularScoreSinal(indicadores, divergencias, lateral) {
   }
 
   // INDICADORES PRINCIPAIS
-  if (rsi > 35 && rsi < 65) score += 5; // Zona neutra é boa para entrada
+  if (rsi > 35 && rsi < 65) score += 5;
   if (macd.histograma > 0.001) score += 10;
   if (macd.histograma < -0.001) score += 10;
   if (stoch.k > 20 && stoch.k < 80) score += 5;
@@ -525,19 +542,31 @@ function validarSinal(sinal, score, indicadores) {
 }
 
 // =============================================
-// API E ANÁLISE PRINCIPAL
+// API E ANÁLISE PRINCIPAL - CORRIGIDO
 // =============================================
 async function obterDadosTwelveData() {
   try {
     const apiKey = API_KEYS[currentKeyIndex];
     const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.CRYPTO_IDX}&interval=1min&outputsize=100&apikey=${apiKey}`;
     
+    console.log("🔍 Obtendo dados da API...");
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Falha na API: ${response.status}`);
+    
+    if (!response.ok) {
+      throw new Error(`Falha na API: ${response.status}`);
+    }
     
     const data = await response.json();
-    if (data.status === 'error') throw new Error(data.message);
-    if (!data.values || data.values.length === 0) throw new Error("Dados vazios");
+    
+    if (data.status === 'error') {
+      throw new Error(data.message || `Erro Twelve Data: ${data.code}`);
+    }
+    
+    if (!data.values || data.values.length === 0) {
+      throw new Error("Dados vazios da API");
+    }
+    
+    console.log("✅ Dados obtidos com sucesso:", data.values.length, "velas");
     
     return data.values.reverse().map(item => ({
       time: item.datetime,
@@ -548,19 +577,29 @@ async function obterDadosTwelveData() {
       volume: parseFloat(item.volume) || 1
     }));
   } catch (e) {
-    console.error("Erro API:", e);
+    console.error("❌ Erro ao obter dados:", e);
+    // Tentar próxima chave
     currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+    console.log(`🔄 Tentando próxima chave: ${currentKeyIndex}`);
     throw e;
   }
 }
 
 async function analisarMercado() {
-  if (state.leituraEmAndamento) return;
+  if (state.leituraEmAndamento) {
+    console.log("⏳ Análise já em andamento, aguardando...");
+    return;
+  }
+  
   state.leituraEmAndamento = true;
+  console.log("🚀 Iniciando análise de mercado...");
   
   try {
     const dados = await obterDadosTwelveData();
-    if (dados.length < 20) throw new Error("Dados insuficientes");
+    
+    if (dados.length < 20) {
+      throw new Error(`Dados insuficientes (${dados.length} velas)`);
+    }
     
     state.dadosHistoricos = dados;
     const velaAtual = dados[dados.length - 1];
@@ -568,6 +607,8 @@ async function analisarMercado() {
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
     const volumes = dados.map(v => v.volume);
+
+    console.log("📊 Calculando indicadores...");
 
     // CALCULAR INDICADORES PRINCIPAIS
     const zonas = calcularZonasPreco(dados);
@@ -591,6 +632,11 @@ async function analisarMercado() {
     const rsi = calcularRSI(closes);
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
+
+    console.log("📈 Indicadores calculados:", {
+      rsi, stochK: stoch.k, macd: macd.histograma,
+      volume: state.volumeRelativo, superTrend: superTrend.direcao
+    });
 
     // MANTER HISTÓRICO RSI
     state.rsiHistory.push(rsi);
@@ -616,7 +662,7 @@ async function analisarMercado() {
 
     // GERAR SINAL
     let sinal = gerarSinalConfiavel(indicadores, lateral);
-    const score = calcularScoreSinal(indicadores, {}, lateral);
+    const score = calcularScoreSinal(indicadores, lateral);
     
     // VALIDAR SINAL
     sinal = validarSinal(sinal, score, indicadores);
@@ -631,6 +677,7 @@ async function analisarMercado() {
       state.consecutiveSignalCount++;
       if (state.consecutiveSignalCount > CONFIG.LIMIARES.MAX_CONSECUTIVE_SIGNALS) {
         sinal = "ESPERAR";
+        console.log("⏸️ Muitos sinais consecutivos, aguardando...");
       }
     } else if (sinal !== "ESPERAR") {
       state.consecutiveSignalCount = 1;
@@ -646,6 +693,8 @@ async function analisarMercado() {
     state.ultimoScore = score;
     state.qualidadeSinal = qualidade;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
+
+    console.log(`🎯 SINAL: ${sinal} | Score: ${score}% | Qualidade: ${qualidade}`);
 
     // ATUALIZAR INTERFACE
     atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia, qualidade);
@@ -666,24 +715,31 @@ async function analisarMercado() {
     }
 
     // REGISTRAR SINAL
-    if (sinal !== "ESPERAR") {
-      state.ultimos.unshift(`${state.ultimaAtualizacao} - ${sinal} (${score}%) [${qualidade}]`);
-      if (state.ultimos.length > 6) state.ultimos.pop();
-      
-      const ultimosElement = document.getElementById("ultimos");
-      if (ultimosElement) ultimosElement.innerHTML = state.ultimos.map(i => `<li>${i}</li>`).join("");
+    state.ultimos.unshift(`${state.ultimaAtualizacao} - ${sinal} (${score}%) [${qualidade}]`);
+    if (state.ultimos.length > 6) state.ultimos.pop();
+    
+    const ultimosElement = document.getElementById("ultimos");
+    if (ultimosElement) {
+      ultimosElement.innerHTML = state.ultimos.map(i => `<li>${i}</li>`).join("");
     }
 
+    console.log("✅ Análise concluída com sucesso!");
+
   } catch (e) {
-    console.error("Erro na análise:", e);
+    console.error("❌ Erro na análise:", e);
     atualizarInterface("ERRO", 0, "ERRO", 0, "BAIXA");
+    
+    const criteriosElement = document.getElementById("criterios");
+    if (criteriosElement) {
+      criteriosElement.innerHTML = `<li>❌ ERRO: ${e.message}</li>`;
+    }
   } finally {
     state.leituraEmAndamento = false;
   }
 }
 
 // =============================================
-// CONTROLE DE TEMPO
+// CONTROLE DE TEMPO - CORRIGIDO
 // =============================================
 function sincronizarTimer() {
   clearInterval(state.intervaloAtual);
@@ -697,13 +753,18 @@ function sincronizarTimer() {
     elementoTimer.style.color = state.timer <= 5 ? 'red' : '';
   }
   
+  console.log(`⏰ Timer sincronizado: ${state.timer}s`);
+  
   state.intervaloAtual = setInterval(() => {
     state.timer--;
+    
     if (elementoTimer) {
       elementoTimer.textContent = formatarTimer(state.timer);
       elementoTimer.style.color = state.timer <= 5 ? 'red' : '';
     }
+    
     if (state.timer <= 0) {
+      console.log("🔄 Timer chegou a zero, executando análise...");
       clearInterval(state.intervaloAtual);
       analisarMercado();
       sincronizarTimer();
@@ -712,11 +773,33 @@ function sincronizarTimer() {
 }
 
 function iniciarAplicativo() {
+  console.log("🚀 Iniciando aplicativo...");
   setInterval(atualizarRelogio, 1000);
   sincronizarTimer();
-  setTimeout(analisarMercado, 2000);
+  
+  // Primeira análise imediata
+  setTimeout(() => {
+    console.log("🔍 Executando primeira análise...");
+    analisarMercado();
+  }, 1000);
 }
 
 // INICIAR APLICAÇÃO
-if (document.readyState === "complete") iniciarAplicativo();
-else document.addEventListener("DOMContentLoaded", iniciarAplicativo);
+if (document.readyState === "complete") {
+  console.log("📄 Documento pronto, iniciando...");
+  iniciarAplicativo();
+} else {
+  console.log("⏳ Aguardando documento carregar...");
+  document.addEventListener("DOMContentLoaded", iniciarAplicativo);
+}
+
+// Adicionar CSS para animação de pulsação
+const style = document.createElement('style');
+style.textContent = `
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(0, 255, 0, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); }
+  }
+`;
+document.head.appendChild(style);
