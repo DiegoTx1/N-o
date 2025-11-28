@@ -49,16 +49,16 @@ const CONFIG = {
     VWAP: 20
   },
   LIMIARES: {
-    SCORE_ALTO: 75,
-    SCORE_MEDIO: 60,
-    RSI_OVERBOUGHT: 70,
-    RSI_OVERSOLD: 30,
-    STOCH_OVERBOUGHT: 80,
-    STOCH_OVERSOLD: 20,
-    VARIACAO_LATERAL: 0.01,
-    VOLUME_ALERTA: 1.5,
-    MIN_COOLDOWN: 2,
-    MAX_CONSECUTIVE_SIGNALS: 2
+    SCORE_ALTO: 65,
+    SCORE_MEDIO: 55,
+    RSI_OVERBOUGHT: 80,
+    RSI_OVERSOLD: 20,
+    STOCH_OVERBOUGHT: 85,
+    STOCH_OVERSOLD: 15,
+    VARIACAO_LATERAL: 0.02,
+    VOLUME_ALERTA: 1.2,
+    MIN_COOLDOWN: 1,
+    MAX_CONSECUTIVE_SIGNALS: 3
   }
 };
 
@@ -90,8 +90,8 @@ function atualizarRelogio() {
 }
 
 function determinarQualidadeSinal(score, volume, tendencia) {
-  if (score >= 80 && volume > 1.5 && tendencia.forca > 70) return "ALTA";
-  if (score >= 70 && volume > 1.2 && tendencia.forca > 50) return "MEDIA";
+  if (score >= 75 && volume > 1.5 && tendencia.forca > 70) return "ALTA";
+  if (score >= 65 && volume > 1.2 && tendencia.forca > 50) return "MEDIA";
   return "BAIXA";
 }
 
@@ -138,10 +138,10 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia, qualidade) 
   const scoreElement = document.getElementById("score");
   if (scoreElement) {
     scoreElement.textContent = `Confiança: ${score}%`;
-    if (score >= 80) {
+    if (score >= 75) {
       scoreElement.style.color = '#00ff00';
       scoreElement.style.fontWeight = 'bold';
-    } else if (score >= 70) {
+    } else if (score >= 65) {
       scoreElement.style.color = '#ffff00';
     } else {
       scoreElement.style.color = '#ff0000';
@@ -161,7 +161,7 @@ function atualizarInterface(sinal, score, tendencia, forcaTendencia, qualidade) 
 }
 
 // =============================================
-// INDICADORES TÉCNICOS OTIMIZADOS
+// INDICADORES TÉCNICOS
 // =============================================
 const calcularMedia = {
   simples: (dados, periodo) => {
@@ -401,7 +401,7 @@ function calcularBandasBollinger(closes) {
 }
 
 // =============================================
-// ANÁLISE TÉCNICA PARA SINAIS REAIS
+// ANÁLISE TÉCNICA
 // =============================================
 function avaliarTendencia(ema5, ema13, ema50) {
   if (ema5 === null || ema13 === null || ema50 === null) {
@@ -456,74 +456,85 @@ function calcularZonasPreco(dados) {
 }
 
 // =============================================
-// SISTEMA DE SINAIS PARA TRADING REAL
+// SISTEMA DE SINAIS - MAIS PERMISSIVO
 // =============================================
 function calcularScoreSinal(indicadores, lateral) {
   const { rsi, stoch, macd, close, tendencia, volumeRelativo, vwap, superTrend, emaCurta, emaMedia } = indicadores;
   
   let score = 50;
 
-  // CONFIRMAÇÃO DE TENDÊNCIA (Peso alto)
-  if (tendencia.forca > 60) {
-    score += 20;
+  // CONFIRMAÇÃO DE TENDÊNCIA
+  if (tendencia.forca > 50) {
+    score += 15;
   }
 
-  // INDICADORES PRINCIPAIS
-  if (rsi > 35 && rsi < 65) score += 5;
-  if (macd.histograma > 0.001) score += 10;
-  if (macd.histograma < -0.001) score += 10;
-  if (stoch.k > 20 && stoch.k < 80) score += 5;
+  // INDICADORES PRINCIPAIS (Mais permissivos)
+  if (rsi > 30 && rsi < 70) score += 8;
+  if (macd.histograma > 0.0005) score += 12;
+  if (macd.histograma < -0.0005) score += 12;
+  if (stoch.k > 25 && stoch.k < 85) score += 7;
 
   // CONFIRMAÇÕES DE PREÇO
-  if (close > vwap) score += 8;
-  if (close > emaCurta && close > emaMedia) score += 7;
-  if (superTrend.direcao > 0) score += 8;
-  if (superTrend.direcao < 0) score += 8;
+  if (close > vwap * 0.995) score += 10;
+  if (close < vwap * 1.005) score += 10;
+  if (close > emaCurta) score += 6;
+  if (close > emaMedia) score += 6;
+  if (superTrend.direcao > 0) score += 10;
+  if (superTrend.direcao < 0) score += 10;
 
-  // VOLUME (Confirmação importante)
-  if (volumeRelativo > 1.3) score += 10;
-  if (volumeRelativo > 1.8) score += 5;
+  // VOLUME
+  if (volumeRelativo > 1.2) score += 12;
+  if (volumeRelativo > 1.5) score += 8;
 
-  // FILTRO DE LATERALIDADE
-  if (lateral) score -= 15;
+  // MENOS PENALIDADE POR LATERALIDADE
+  if (lateral) score -= 10;
 
   return Math.min(100, Math.max(0, score));
 }
 
 function gerarSinalConfiavel(indicadores, lateral) {
-  const { rsi, stoch, macd, close, tendencia, volumeRelativo, vwap, superTrend, bandasBollinger } = indicadores;
+  const { rsi, stoch, macd, close, tendencia, volumeRelativo, vwap, superTrend, bandasBollinger, emaCurta, emaMedia } = indicadores;
 
-  // REGRA 1: TENDÊNCIA FORTE + INDICADORES ALINHADOS
-  if (tendencia.forca > 65 && volumeRelativo > 1.3) {
+  // REGRA 1: TENDÊNCIA + INDICADORES ALINHADOS
+  if (tendencia.forca > 50 && volumeRelativo > 1.0) {
     if (tendencia.tendencia.includes("ALTA") && 
-        macd.histograma > 0.001 && 
-        close > vwap &&
+        macd.histograma > -0.002 &&
+        close > vwap * 0.998 &&
         superTrend.direcao > 0) {
       return "CALL";
     }
     
     if (tendencia.tendencia.includes("BAIXA") && 
-        macd.histograma < -0.001 && 
-        close < vwap &&
+        macd.histograma < 0.002 &&
+        close < vwap * 1.002 &&
         superTrend.direcao < 0) {
       return "PUT";
     }
   }
 
-  // REGRA 2: SUPERTREND + VOLUME ALTO
-  if (volumeRelativo > 1.5) {
-    if (superTrend.direcao > 0 && close > bandasBollinger.medio) {
+  // REGRA 2: SUPERTREND + MÉDIAS
+  if (volumeRelativo > 1.1) {
+    if (superTrend.direcao > 0 && close > emaCurta && close > emaMedia) {
       return "CALL";
     }
-    if (superTrend.direcao < 0 && close < bandasBollinger.medio) {
+    if (superTrend.direcao < 0 && close < emaCurta && close < emaMedia) {
       return "PUT";
     }
   }
 
-  // REGRA 3: CONDIÇÕES EXTREMAS COM VOLUME
-  if (volumeRelativo > 1.8) {
-    if (rsi < 25 && stoch.k < 20 && !lateral) return "CALL";
-    if (rsi > 75 && stoch.k > 80 && !lateral) return "PUT";
+  // REGRA 3: CONDIÇÕES EXTREMAS
+  if (volumeRelativo > 1.3) {
+    if (rsi < 30 && stoch.k < 25 && !lateral) return "CALL";
+    if (rsi > 70 && stoch.k > 75 && !lateral) return "PUT";
+  }
+
+  // REGRA 4: MOMENTUM SIMPLES
+  if (volumeRelativo > 1.0 && !lateral) {
+    const momentum = macd.histograma > 0.001 && close > vwap && stoch.k > 50;
+    if (momentum) return "CALL";
+    
+    const momentumNegativo = macd.histograma < -0.001 && close < vwap && stoch.k < 50;
+    if (momentumNegativo) return "PUT";
   }
 
   return "ESPERAR";
@@ -532,24 +543,23 @@ function gerarSinalConfiavel(indicadores, lateral) {
 function validarSinal(sinal, score, indicadores) {
   const { volumeRelativo, tendencia, lateral } = indicadores;
   
-  // FILTROS DE SEGURANÇA
-  if (score < 70) return "ESPERAR";
-  if (volumeRelativo < 1.0) return "ESPERAR";
-  if (lateral && score < 80) return "ESPERAR";
-  if (tendencia.forca < 40) return "ESPERAR";
+  // FILTROS MAIS PERMISSIVOS
+  if (score < 60) return "ESPERAR";
+  if (volumeRelativo < 0.8) return "ESPERAR";
+  if (lateral && score < 70) return "ESPERAR";
+  if (tendencia.forca < 30) return "ESPERAR";
   
   return sinal;
 }
 
 // =============================================
-// API E ANÁLISE PRINCIPAL - CORRIGIDO
+// API E ANÁLISE PRINCIPAL
 // =============================================
 async function obterDadosTwelveData() {
   try {
     const apiKey = API_KEYS[currentKeyIndex];
     const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.CRYPTO_IDX}&interval=1min&outputsize=100&apikey=${apiKey}`;
     
-    console.log("🔍 Obtendo dados da API...");
     const response = await fetch(url);
     
     if (!response.ok) {
@@ -566,8 +576,6 @@ async function obterDadosTwelveData() {
       throw new Error("Dados vazios da API");
     }
     
-    console.log("✅ Dados obtidos com sucesso:", data.values.length, "velas");
-    
     return data.values.reverse().map(item => ({
       time: item.datetime,
       open: parseFloat(item.open),
@@ -577,22 +585,16 @@ async function obterDadosTwelveData() {
       volume: parseFloat(item.volume) || 1
     }));
   } catch (e) {
-    console.error("❌ Erro ao obter dados:", e);
-    // Tentar próxima chave
+    console.error("Erro ao obter dados:", e);
     currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-    console.log(`🔄 Tentando próxima chave: ${currentKeyIndex}`);
     throw e;
   }
 }
 
 async function analisarMercado() {
-  if (state.leituraEmAndamento) {
-    console.log("⏳ Análise já em andamento, aguardando...");
-    return;
-  }
+  if (state.leituraEmAndamento) return;
   
   state.leituraEmAndamento = true;
-  console.log("🚀 Iniciando análise de mercado...");
   
   try {
     const dados = await obterDadosTwelveData();
@@ -607,8 +609,6 @@ async function analisarMercado() {
     const highs = dados.map(v => v.high);
     const lows = dados.map(v => v.low);
     const volumes = dados.map(v => v.volume);
-
-    console.log("📊 Calculando indicadores...");
 
     // CALCULAR INDICADORES PRINCIPAIS
     const zonas = calcularZonasPreco(dados);
@@ -632,11 +632,6 @@ async function analisarMercado() {
     const rsi = calcularRSI(closes);
     const stoch = calcularStochastic(highs, lows, closes);
     const macd = calcularMACD(closes);
-
-    console.log("📈 Indicadores calculados:", {
-      rsi, stochK: stoch.k, macd: macd.histograma,
-      volume: state.volumeRelativo, superTrend: superTrend.direcao
-    });
 
     // MANTER HISTÓRICO RSI
     state.rsiHistory.push(rsi);
@@ -677,7 +672,6 @@ async function analisarMercado() {
       state.consecutiveSignalCount++;
       if (state.consecutiveSignalCount > CONFIG.LIMIARES.MAX_CONSECUTIVE_SIGNALS) {
         sinal = "ESPERAR";
-        console.log("⏸️ Muitos sinais consecutivos, aguardando...");
       }
     } else if (sinal !== "ESPERAR") {
       state.consecutiveSignalCount = 1;
@@ -693,8 +687,6 @@ async function analisarMercado() {
     state.ultimoScore = score;
     state.qualidadeSinal = qualidade;
     state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
-
-    console.log(`🎯 SINAL: ${sinal} | Score: ${score}% | Qualidade: ${qualidade}`);
 
     // ATUALIZAR INTERFACE
     atualizarInterface(sinal, score, state.tendenciaDetectada, state.forcaTendencia, qualidade);
@@ -723,10 +715,8 @@ async function analisarMercado() {
       ultimosElement.innerHTML = state.ultimos.map(i => `<li>${i}</li>`).join("");
     }
 
-    console.log("✅ Análise concluída com sucesso!");
-
   } catch (e) {
-    console.error("❌ Erro na análise:", e);
+    console.error("Erro na análise:", e);
     atualizarInterface("ERRO", 0, "ERRO", 0, "BAIXA");
     
     const criteriosElement = document.getElementById("criterios");
@@ -739,7 +729,7 @@ async function analisarMercado() {
 }
 
 // =============================================
-// CONTROLE DE TEMPO - CORRIGIDO
+// CONTROLE DE TEMPO
 // =============================================
 function sincronizarTimer() {
   clearInterval(state.intervaloAtual);
@@ -753,8 +743,6 @@ function sincronizarTimer() {
     elementoTimer.style.color = state.timer <= 5 ? 'red' : '';
   }
   
-  console.log(`⏰ Timer sincronizado: ${state.timer}s`);
-  
   state.intervaloAtual = setInterval(() => {
     state.timer--;
     
@@ -764,7 +752,6 @@ function sincronizarTimer() {
     }
     
     if (state.timer <= 0) {
-      console.log("🔄 Timer chegou a zero, executando análise...");
       clearInterval(state.intervaloAtual);
       analisarMercado();
       sincronizarTimer();
@@ -773,27 +760,23 @@ function sincronizarTimer() {
 }
 
 function iniciarAplicativo() {
-  console.log("🚀 Iniciando aplicativo...");
   setInterval(atualizarRelogio, 1000);
   sincronizarTimer();
   
   // Primeira análise imediata
   setTimeout(() => {
-    console.log("🔍 Executando primeira análise...");
     analisarMercado();
   }, 1000);
 }
 
 // INICIAR APLICAÇÃO
 if (document.readyState === "complete") {
-  console.log("📄 Documento pronto, iniciando...");
   iniciarAplicativo();
 } else {
-  console.log("⏳ Aguardando documento carregar...");
   document.addEventListener("DOMContentLoaded", iniciarAplicativo);
 }
 
-// Adicionar CSS para animação de pulsação
+// CSS para animação de pulsação
 const style = document.createElement('style');
 style.textContent = `
   @keyframes pulse {
