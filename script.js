@@ -49,16 +49,16 @@ const CONFIG = {
     VWAP: 20
   },
   LIMIARES: {
-    SCORE_ALTO: 65,
-    SCORE_MEDIO: 55,
-    RSI_OVERBOUGHT: 80,
-    RSI_OVERSOLD: 20,
-    STOCH_OVERBOUGHT: 85,
-    STOCH_OVERSOLD: 15,
-    VARIACAO_LATERAL: 0.02,
-    VOLUME_ALERTA: 1.2,
-    MIN_COOLDOWN: 1,
-    MAX_CONSECUTIVE_SIGNALS: 3
+    SCORE_ALTO: 60,
+    SCORE_MEDIO: 50,
+    RSI_OVERBOUGHT: 75,
+    RSI_OVERSOLD: 25,
+    STOCH_OVERBOUGHT: 80,
+    STOCH_OVERSOLD: 20,
+    VARIACAO_LATERAL: 0.015,
+    VOLUME_ALERTA: 1.0,
+    MIN_COOLDOWN: 0.5,
+    MAX_CONSECUTIVE_SIGNALS: 5
   }
 };
 
@@ -469,10 +469,10 @@ function calcularScoreSinal(indicadores, lateral) {
   }
 
   // INDICADORES PRINCIPAIS (Mais permissivos)
-  if (rsi > 30 && rsi < 70) score += 8;
-  if (macd.histograma > 0.0005) score += 12;
-  if (macd.histograma < -0.0005) score += 12;
-  if (stoch.k > 25 && stoch.k < 85) score += 7;
+  if (rsi > 25 && rsi < 75) score += 8;
+  if (macd.histograma > 0.0003) score += 12;
+  if (macd.histograma < -0.0003) score += 12;
+  if (stoch.k > 20 && stoch.k < 80) score += 7;
 
   // CONFIRMAÇÕES DE PREÇO
   if (close > vwap * 0.995) score += 10;
@@ -487,54 +487,42 @@ function calcularScoreSinal(indicadores, lateral) {
   if (volumeRelativo > 1.5) score += 8;
 
   // MENOS PENALIDADE POR LATERALIDADE
-  if (lateral) score -= 10;
+  if (lateral) score -= 8;
 
   return Math.min(100, Math.max(0, score));
 }
 
 function gerarSinalConfiavel(indicadores, lateral) {
-  const { rsi, stoch, macd, close, tendencia, volumeRelativo, vwap, superTrend, bandasBollinger, emaCurta, emaMedia } = indicadores;
+  const { rsi, stoch, macd, close, tendencia, volumeRelativo, vwap, superTrend, emaCurta, emaMedia } = indicadores;
 
-  // REGRA 1: TENDÊNCIA + INDICADORES ALINHADOS
-  if (tendencia.forca > 50 && volumeRelativo > 1.0) {
-    if (tendencia.tendencia.includes("ALTA") && 
-        macd.histograma > -0.002 &&
-        close > vwap * 0.998 &&
-        superTrend.direcao > 0) {
-      return "CALL";
-    }
-    
-    if (tendencia.tendencia.includes("BAIXA") && 
-        macd.histograma < 0.002 &&
-        close < vwap * 1.002 &&
-        superTrend.direcao < 0) {
-      return "PUT";
-    }
+  // SINAL DE CALL - MAIS PERMISSIVO
+  if (
+    (rsi < 70 || stoch.k < 80) &&
+    macd.histograma > -0.0008 &&
+    close > vwap * 0.993 &&
+    superTrend.direcao > 0 &&
+    volumeRelativo > 0.6 &&
+    !lateral
+  ) {
+    return "CALL";
+  }
+  
+  // SINAL DE PUT - MAIS PERMISSIVO
+  if (
+    (rsi > 30 || stoch.k > 20) &&
+    macd.histograma < 0.0008 &&
+    close < vwap * 1.007 &&
+    superTrend.direcao < 0 &&
+    volumeRelativo > 0.6 &&
+    !lateral
+  ) {
+    return "PUT";
   }
 
-  // REGRA 2: SUPERTREND + MÉDIAS
-  if (volumeRelativo > 1.1) {
-    if (superTrend.direcao > 0 && close > emaCurta && close > emaMedia) {
-      return "CALL";
-    }
-    if (superTrend.direcao < 0 && close < emaCurta && close < emaMedia) {
-      return "PUT";
-    }
-  }
-
-  // REGRA 3: CONDIÇÕES EXTREMAS
-  if (volumeRelativo > 1.3) {
-    if (rsi < 30 && stoch.k < 25 && !lateral) return "CALL";
-    if (rsi > 70 && stoch.k > 75 && !lateral) return "PUT";
-  }
-
-  // REGRA 4: MOMENTUM SIMPLES
-  if (volumeRelativo > 1.0 && !lateral) {
-    const momentum = macd.histograma > 0.001 && close > vwap && stoch.k > 50;
-    if (momentum) return "CALL";
-    
-    const momentumNegativo = macd.histograma < -0.001 && close < vwap && stoch.k < 50;
-    if (momentumNegativo) return "PUT";
+  // SINAIS DE MOMENTUM SIMPLES
+  if (volumeRelativo > 0.8) {
+    if (macd.histograma > 0.0003 && close > emaCurta) return "CALL";
+    if (macd.histograma < -0.0003 && close < emaCurta) return "PUT";
   }
 
   return "ESPERAR";
@@ -544,10 +532,10 @@ function validarSinal(sinal, score, indicadores) {
   const { volumeRelativo, tendencia, lateral } = indicadores;
   
   // FILTROS MAIS PERMISSIVOS
-  if (score < 60) return "ESPERAR";
-  if (volumeRelativo < 0.8) return "ESPERAR";
-  if (lateral && score < 70) return "ESPERAR";
-  if (tendencia.forca < 30) return "ESPERAR";
+  if (score < 55) return "ESPERAR";
+  if (volumeRelativo < 0.5) return "ESPERAR";
+  if (lateral && score < 65) return "ESPERAR";
+  if (tendencia.forca < 15) return "ESPERAR";
   
   return sinal;
 }
@@ -695,13 +683,13 @@ async function analisarMercado() {
     const criteriosElement = document.getElementById("criterios");
     if (criteriosElement) {
       criteriosElement.innerHTML = `
-        <li>🎯 BITCOIN CASH - $${indicadores.close.toFixed(2)}</li>
+        <li>🎯 BITCOIN CASH - $${velaAtual.close.toFixed(2)}</li>
         <li>📊 ${state.tendenciaDetectada} (${Math.round(state.forcaTendencia)}%)</li>
         <li>⭐ Qualidade: ${qualidade}</li>
         <li>📉 RSI: ${rsi.toFixed(1)} | MACD: ${macd.histograma > 0 ? '+' : ''}${macd.histograma.toFixed(4)}</li>
         <li>📈 Stochastic: ${stoch.k.toFixed(1)} | SuperTrend: ${superTrend.direcao > 0 ? 'ALTA' : 'BAIXA'}</li>
         <li>💹 Volume: ${(state.volumeRelativo * 100).toFixed(0)}% ${state.volumeRelativo > 1.5 ? '🚀' : ''}</li>
-        <li>📊 VWAP: $${state.vwap.toFixed(2)} | Preço: $${indicadores.close.toFixed(2)}</li>
+        <li>📊 VWAP: $${state.vwap.toFixed(2)} | Preço: $${velaAtual.close.toFixed(2)}</li>
         <li>🎯 Suporte: $${state.suporteKey.toFixed(2)} | Resistência: $${state.resistenciaKey.toFixed(2)}</li>
       `;
     }
