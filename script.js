@@ -1,37 +1,23 @@
 // =============================================
-// CONFIGURAÇÕES OTIMIZADAS PARA SCALP REAL
+// CONFIGURAÇÃO ESTÁVEL - SCALP BCH 1MIN
 // =============================================
 const state = {
-  ultimos: [],
   timer: 60,
   leituraEmAndamento: false,
   intervaloAtual: null,
-  ultimoSinal: null,
+  ultimoSinal: "ESPERAR",
   ultimoScore: 0,
-  tendenciaDetectada: "NEUTRA",
-  forcaTendencia: 0,
-  dadosHistoricos: [],
-  volumeRelativo: 0,
-  vwap: 0,
+  ultimos: [],
   ultimaAtualizacao: ""
 };
 
 const CONFIG = {
-  API_ENDPOINTS: {
-    TWELVE_DATA: "https://api.twelvedata.com"
-  },
-  PARES: {
-    CRYPTO_IDX: "BCH/USD"
-  },
-  PERIODOS: {
-    EMA: 9,
-    VOLUME_LOOKBACK: 20,
-    VWAP: 20
-  },
-  LIMIARES: {
-    MIN_VOLUME: 1.0,
-    FORCA_VELA: 0.6
-  }
+  API: "https://api.twelvedata.com",
+  PAR: "BCH/USD",
+  EMA: 9,
+  VWAP: 20,
+  VOLUME: 20,
+  ROMPIMENTO_LOOKBACK: 6
 };
 
 const API_KEYS = [
@@ -44,28 +30,16 @@ let currentKeyIndex = 0;
 // =============================================
 // UTILIDADES
 // =============================================
-function formatarTimer(segundos) {
-  return `0:${segundos.toString().padStart(2, '0')}`;
-}
-
-function atualizarRelogio() {
-  const elementoHora = document.getElementById("hora");
-  if (!elementoHora) return;
-  const now = new Date();
-  state.ultimaAtualizacao = now.toLocaleTimeString("pt-BR");
-  elementoHora.textContent = state.ultimaAtualizacao;
-}
-
-function calcularMediaSimples(dados, periodo) {
-  if (dados.length < periodo) return null;
-  const slice = dados.slice(-periodo);
-  return slice.reduce((a, b) => a + b, 0) / periodo;
+function media(arr, p) {
+  if (arr.length < p) return null;
+  const s = arr.slice(-p);
+  return s.reduce((a, b) => a + b, 0) / p;
 }
 
 function calcularEMA(dados, periodo) {
   if (dados.length < periodo) return null;
   const k = 2 / (periodo + 1);
-  let ema = calcularMediaSimples(dados.slice(0, periodo), periodo);
+  let ema = media(dados.slice(0, periodo), periodo);
   for (let i = periodo; i < dados.length; i++) {
     ema = dados[i] * k + ema * (1 - k);
   }
@@ -73,127 +47,127 @@ function calcularEMA(dados, periodo) {
 }
 
 function calcularVWAP(dados) {
-  const periodo = CONFIG.PERIODOS.VWAP;
-  if (dados.length < periodo) return dados[dados.length - 1].close;
-
-  let tpTotal = 0;
-  let volumeTotal = 0;
-
-  dados.slice(-periodo).forEach(v => {
+  const slice = dados.slice(-CONFIG.VWAP);
+  let tpv = 0, vol = 0;
+  slice.forEach(v => {
     const tp = (v.high + v.low + v.close) / 3;
-    tpTotal += tp * v.volume;
-    volumeTotal += v.volume;
+    tpv += tp * v.volume;
+    vol += v.volume;
   });
-
-  return tpTotal / volumeTotal;
+  return tpv / vol;
 }
 
-function calcularVolumeRelativo(volumes) {
-  const media = calcularMediaSimples(volumes, CONFIG.PERIODOS.VOLUME_LOOKBACK);
-  const atual = volumes[volumes.length - 1];
-  return atual / media;
+function volumeRelativo(volumes) {
+  const m = media(volumes, CONFIG.VOLUME);
+  return volumes[volumes.length - 1] / m;
 }
 
-function analisarForcaVela(vela) {
-  const corpo = Math.abs(vela.close - vela.open);
-  const range = vela.high - vela.low;
-  if (range === 0) return 0;
-  return corpo / range;
+function forcaVela(v) {
+  const corpo = Math.abs(v.close - v.open);
+  const range = v.high - v.low;
+  return range === 0 ? 0 : corpo / range;
 }
 
-function fechamentoProximoTopo(vela) {
-  return (vela.high - vela.close) < (vela.high - vela.low) * 0.25;
+function rompeMaxima(dados) {
+  const slice = dados.slice(-CONFIG.ROMPIMENTO_LOOKBACK - 1, -1);
+  const max = Math.max(...slice.map(v => v.high));
+  return dados[dados.length - 1].close > max;
 }
 
-function fechamentoProximoFundo(vela) {
-  return (vela.close - vela.low) < (vela.high - vela.low) * 0.25;
+function rompeMinima(dados) {
+  const slice = dados.slice(-CONFIG.ROMPIMENTO_LOOKBACK - 1, -1);
+  const min = Math.min(...slice.map(v => v.low));
+  return dados[dados.length - 1].close < min;
 }
 
 // =============================================
-// SISTEMA DE SINAL PROFISSIONAL
+// GERADOR DE SINAL CONFIÁVEL
 // =============================================
 function gerarSinal(dados) {
   const vela = dados[dados.length - 1];
   const closes = dados.map(v => v.close);
   const volumes = dados.map(v => v.volume);
 
-  const ema = calcularEMA(closes, CONFIG.PERIODOS.EMA);
+  const ema = calcularEMA(closes, CONFIG.EMA);
   const vwap = calcularVWAP(dados);
-  const volumeRelativo = calcularVolumeRelativo(volumes);
-  const forcaVela = analisarForcaVela(vela);
-
-  state.volumeRelativo = volumeRelativo;
-  state.vwap = vwap;
-
-  if (!ema) return { sinal: "ESPERAR", score: 0 };
+  const volRel = volumeRelativo(volumes);
+  const força = forcaVela(vela);
 
   let score = 0;
 
   const tendenciaAlta = vela.close > ema && vela.close > vwap;
   const tendenciaBaixa = vela.close < ema && vela.close < vwap;
 
-  if (volumeRelativo > CONFIG.LIMIARES.MIN_VOLUME) score += 30;
-  if (forcaVela > CONFIG.LIMIARES.FORCA_VELA) score += 30;
+  if (volRel > 1) score += 25;
+  if (força > 0.55) score += 25;
 
-  if (tendenciaAlta && fechamentoProximoTopo(vela)) {
-    score += 40;
+  // ROMPIMENTO REAL
+  if (rompeMaxima(dados) && tendenciaAlta) {
+    score += 50;
     return { sinal: "CALL", score };
   }
 
-  if (tendenciaBaixa && fechamentoProximoFundo(vela)) {
-    score += 40;
+  if (rompeMinima(dados) && tendenciaBaixa) {
+    score += 50;
     return { sinal: "PUT", score };
   }
 
-  return { sinal: "ESPERAR", score };
+  // MOMENTUM SEM ROMPIMENTO
+  if (tendenciaAlta && força > 0.7 && volRel > 1.1) {
+    return { sinal: "CALL", score: 70 };
+  }
+
+  if (tendenciaBaixa && força > 0.7 && volRel > 1.1) {
+    return { sinal: "PUT", score: 70 };
+  }
+
+  return { sinal: "ESPERAR", score: score };
 }
 
 // =============================================
 // API
 // =============================================
-async function obterDadosTwelveData() {
+async function obterDados() {
   const apiKey = API_KEYS[currentKeyIndex];
 
-  const url = `${CONFIG.API_ENDPOINTS.TWELVE_DATA}/time_series?symbol=${CONFIG.PARES.CRYPTO_IDX}&interval=1min&outputsize=50&apikey=${apiKey}`;
+  const url = `${CONFIG.API}/time_series?symbol=${CONFIG.PAR}&interval=1min&outputsize=50&apikey=${apiKey}`;
 
-  const response = await fetch(url);
+  const res = await fetch(url);
 
-  if (!response.ok) {
+  if (!res.ok) {
     currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-    throw new Error("Erro API");
+    throw new Error("API falhou");
   }
 
-  const data = await response.json();
+  const data = await res.json();
 
-  return data.values.reverse().map(item => ({
-    time: item.datetime,
-    open: parseFloat(item.open),
-    high: parseFloat(item.high),
-    low: parseFloat(item.low),
-    close: parseFloat(item.close),
-    volume: parseFloat(item.volume) || 1
+  return data.values.reverse().map(v => ({
+    open: +v.open,
+    high: +v.high,
+    low: +v.low,
+    close: +v.close,
+    volume: +v.volume || 1
   }));
 }
 
 // =============================================
-// ANÁLISE PRINCIPAL
+// ANÁLISE
 // =============================================
 async function analisarMercado() {
   if (state.leituraEmAndamento) return;
   state.leituraEmAndamento = true;
 
   try {
-    const dados = await obterDadosTwelveData();
-    state.dadosHistoricos = dados;
+    const dados = await obterDados();
+    const r = gerarSinal(dados);
 
-    const resultado = gerarSinal(dados);
+    state.ultimoSinal = r.sinal;
+    state.ultimoScore = r.score;
+    state.ultimaAtualizacao = new Date().toLocaleTimeString("pt-BR");
 
-    state.ultimoSinal = resultado.sinal;
-    state.ultimoScore = resultado.score;
+    atualizarInterface(r.sinal, r.score);
 
-    atualizarInterface(resultado.sinal, resultado.score);
-
-    state.ultimos.unshift(`${state.ultimaAtualizacao} - ${resultado.sinal} (${resultado.score}%)`);
+    state.ultimos.unshift(`${state.ultimaAtualizacao} - ${r.sinal} (${r.score}%)`);
     if (state.ultimos.length > 6) state.ultimos.pop();
 
   } catch (e) {
@@ -204,17 +178,17 @@ async function analisarMercado() {
 }
 
 // =============================================
-// INTERFACE
+// UI
 // =============================================
 function atualizarInterface(sinal, score) {
-  const comandoElement = document.getElementById("comando");
-  if (!comandoElement) return;
+  const cmd = document.getElementById("comando");
+  if (cmd) {
+    cmd.textContent = sinal;
+    cmd.className = sinal.toLowerCase();
+  }
 
-  comandoElement.textContent = sinal;
-  comandoElement.className = sinal.toLowerCase();
-
-  const scoreElement = document.getElementById("score");
-  if (scoreElement) scoreElement.textContent = `Confiança: ${score}%`;
+  const sc = document.getElementById("score");
+  if (sc) sc.textContent = `Confiança: ${score}%`;
 }
 
 // =============================================
@@ -225,12 +199,11 @@ function sincronizarTimer() {
   const agora = new Date();
   state.timer = 60 - agora.getSeconds();
 
-  const elementoTimer = document.getElementById("timer");
+  const el = document.getElementById("timer");
 
   state.intervaloAtual = setInterval(() => {
     state.timer--;
-
-    if (elementoTimer) elementoTimer.textContent = formatarTimer(state.timer);
+    if (el) el.textContent = `0:${String(state.timer).padStart(2,'0')}`;
 
     if (state.timer <= 0) {
       clearInterval(state.intervaloAtual);
@@ -240,13 +213,15 @@ function sincronizarTimer() {
   }, 1000);
 }
 
-function iniciarAplicativo() {
-  setInterval(atualizarRelogio, 1000);
+function iniciar() {
+  setInterval(() => {
+    const el = document.getElementById("hora");
+    if (el) el.textContent = new Date().toLocaleTimeString("pt-BR");
+  }, 1000);
+
   sincronizarTimer();
-  setTimeout(analisarMercado, 1000);
+  setTimeout(analisarMercado, 1500);
 }
 
-if (document.readyState === "complete") {
-  iniciarAplicativo();
-} else {
-  document.addEventListener("DOMContentLoaded", iniciarAplicativo);
+if (document.readyState === "complete") iniciar();
+else document.addEventListener("DOMContentLoaded", iniciar);
