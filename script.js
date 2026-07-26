@@ -1,15 +1,16 @@
 // =============================================
-// CONFIG – Já configurado para CRYPTOIDX
+// CONFIG – EDITE AQUI O SÍMBOLO
 // =============================================
 const CONFIG = {
   APP_ID: 1089,
-  SYMBOL: 'CRYPTOIDX',               // ← Índice de criptomoedas da Binary
-  GRANULARITY: 300,                  // 5 minutos (pode mudar para 60, 900 etc.)
+  // SYMBOL: 'CRYPTOIDX',    // ← se não funcionar, troque para 'R_75'
+  SYMBOL: 'R_75',           // ← use R_75 para teste
+  GRANULARITY: 300,
   EMA_PERIOD: 9,
   VWAP_PERIOD: 20,
   VOL_PERIOD: 20,
   LOOKBACK: 10,
-  MIN_SCORE: 75,
+  MIN_SCORE: 40,            // ← reduzido para testar
   WS_URL: 'wss://ws.binaryws.com/websockets/v3?app_id=1089'
 };
 
@@ -25,11 +26,12 @@ const state = {
   connected: false,
   history: [],
   reconnectAttempts: 0,
-  lastCandleEpoch: 0
+  lastCandleEpoch: 0,
+  signalCount: 0            // contador de sinais emitidos
 };
 
 // =============================================
-// INDICADORES
+// INDICADORES (mantidos)
 // =============================================
 function calcEMA(closes, period) {
   if (closes.length < period) return null;
@@ -77,10 +79,13 @@ function rompeMinima(candles) {
 }
 
 // =============================================
-// GERADOR DE SINAL
+// GERADOR DE SINAL (com logs)
 // =============================================
 function gerarSinal(candles) {
+  console.log(`[SINAL] Gerando com ${candles.length} velas`);
+
   if (candles.length < CONFIG.LOOKBACK + 2) {
+    console.log('[SINAL] Velas insuficientes');
     return { sinal: 'ESPERAR', score: 0, ema: null, vwap: null, volRel: null, forca: null };
   }
 
@@ -103,38 +108,58 @@ function gerarSinal(candles) {
   const tendenciaAlta = vela.close > ema && vela.close > vwap;
   const tendenciaBaixa = vela.close < ema && vela.close < vwap;
 
+  console.log(`[SINAL] EMA=${ema?.toFixed(2)}, VWAP=${vwap?.toFixed(2)}, volRel=${volRel?.toFixed(2)}, forca=${forca?.toFixed(2)}`);
+  console.log(`[SINAL] Tendência Alta? ${tendenciaAlta}, Baixa? ${tendenciaBaixa}`);
+
+  let sinal = 'ESPERAR';
+  let finalScore = score;
+
   if (rompeMaxima(candles) && tendenciaAlta) {
     score += 60;
-    const finalScore = Math.min(score, 100);
-    return { sinal: finalScore >= CONFIG.MIN_SCORE ? 'CALL' : 'ESPERAR', score: finalScore, ema, vwap, volRel, forca };
-  }
-
-  if (rompeMinima(candles) && tendenciaBaixa) {
+    finalScore = Math.min(score, 100);
+    sinal = finalScore >= CONFIG.MIN_SCORE ? 'CALL' : 'ESPERAR';
+    console.log(`[SINAL] Rompeu máxima + tendência alta → score ${finalScore} → ${sinal}`);
+  } else if (rompeMinima(candles) && tendenciaBaixa) {
     score += 60;
-    const finalScore = Math.min(score, 100);
-    return { sinal: finalScore >= CONFIG.MIN_SCORE ? 'PUT' : 'ESPERAR', score: finalScore, ema, vwap, volRel, forca };
-  }
-
-  if (tendenciaAlta && forca > 0.7 && volRel > 1.2) {
+    finalScore = Math.min(score, 100);
+    sinal = finalScore >= CONFIG.MIN_SCORE ? 'PUT' : 'ESPERAR';
+    console.log(`[SINAL] Rompeu mínima + tendência baixa → score ${finalScore} → ${sinal}`);
+  } else if (tendenciaAlta && forca > 0.7 && volRel > 1.2) {
     score += 40;
-    const finalScore = Math.min(score, 100);
-    return { sinal: finalScore >= CONFIG.MIN_SCORE ? 'CALL' : 'ESPERAR', score: finalScore, ema, vwap, volRel, forca };
-  }
-
-  if (tendenciaBaixa && forca > 0.7 && volRel > 1.2) {
+    finalScore = Math.min(score, 100);
+    sinal = finalScore >= CONFIG.MIN_SCORE ? 'CALL' : 'ESPERAR';
+    console.log(`[SINAL] Tendência alta forte → score ${finalScore} → ${sinal}`);
+  } else if (tendenciaBaixa && forca > 0.7 && volRel > 1.2) {
     score += 40;
-    const finalScore = Math.min(score, 100);
-    return { sinal: finalScore >= CONFIG.MIN_SCORE ? 'PUT' : 'ESPERAR', score: finalScore, ema, vwap, volRel, forca };
+    finalScore = Math.min(score, 100);
+    sinal = finalScore >= CONFIG.MIN_SCORE ? 'PUT' : 'ESPERAR';
+    console.log(`[SINAL] Tendência baixa forte → score ${finalScore} → ${sinal}`);
+  } else {
+    console.log('[SINAL] Nenhuma condição atendida');
   }
 
-  return { sinal: 'ESPERAR', score, ema, vwap, volRel, forca };
+  // Se ainda não houver sinal, mas score for alto, emitir baseado na tendência
+  if (sinal === 'ESPERAR' && finalScore >= CONFIG.MIN_SCORE) {
+    if (tendenciaAlta) sinal = 'CALL';
+    else if (tendenciaBaixa) sinal = 'PUT';
+    console.log(`[SINAL] Score alto sem condição especial → ${sinal}`);
+  }
+
+  // Incrementa contador se sinal for CALL ou PUT
+  if (sinal !== 'ESPERAR') {
+    state.signalCount++;
+    console.log(`[SINAL] *** SINAL EMITIDO #${state.signalCount}: ${sinal} (score ${finalScore}) ***`);
+  }
+
+  return { sinal, score: finalScore, ema, vwap, volRel, forca };
 }
 
 // =============================================
-// WEBSOCKET
+// WEBSOCKET (com logs)
 // =============================================
 function conectar() {
   setStatus('connecting', 'Conectando…');
+  console.log('[WS] Tentando conectar...');
 
   state.ws = new WebSocket(CONFIG.WS_URL);
 
@@ -142,6 +167,7 @@ function conectar() {
     state.connected = true;
     state.reconnectAttempts = 0;
     setStatus('connected', `Conectado · ${CONFIG.SYMBOL}`);
+    console.log(`[WS] Conectado ao ${CONFIG.SYMBOL}`);
 
     state.ws.send(JSON.stringify({
       ticks_history: CONFIG.SYMBOL,
@@ -152,24 +178,33 @@ function conectar() {
       style: 'candles',
       subscribe: 1
     }));
+    console.log('[WS] Solicitado histórico de candles');
 
     state.ws.send(JSON.stringify({
       ticks: CONFIG.SYMBOL,
       subscribe: 1
     }));
+    console.log('[WS] Inscrito em ticks');
   };
 
   state.ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    handleMessage(data);
+    try {
+      const data = JSON.parse(event.data);
+      // console.log('[WS] Mensagem recebida:', data.msg_type); // descomente se quiser ver tudo
+      handleMessage(data);
+    } catch (e) {
+      console.error('[WS] Erro ao parsear mensagem:', e);
+    }
   };
 
-  state.ws.onerror = () => {
+  state.ws.onerror = (err) => {
+    console.error('[WS] Erro:', err);
     setStatus('error', 'Erro de conexão');
   };
 
   state.ws.onclose = () => {
     state.connected = false;
+    console.warn('[WS] Conexão fechada');
     setStatus('error', 'Desconectado');
     const delay = Math.min(3000 * (state.reconnectAttempts + 1), 15000);
     state.reconnectAttempts++;
@@ -178,9 +213,13 @@ function conectar() {
 }
 
 function handleMessage(data) {
-  if (data.error) return;
+  if (data.error) {
+    console.error('[API] Erro:', data.error);
+    return;
+  }
 
   if (data.msg_type === 'candles') {
+    console.log(`[API] Recebidas ${data.candles.length} velas`);
     state.candles = data.candles.map(c => ({
       open: +c.open,
       high: +c.high,
@@ -191,6 +230,7 @@ function handleMessage(data) {
     }));
     if (state.candles.length > 0) {
       state.lastCandleEpoch = state.candles[state.candles.length - 1].epoch;
+      console.log(`[API] Última vela: ${new Date(state.lastCandleEpoch*1000).toLocaleTimeString()}`);
       processarSinal();
       iniciarTimer();
     }
@@ -208,15 +248,15 @@ function handleMessage(data) {
     };
 
     if (+c.open_time !== state.lastCandleEpoch) {
+      console.log(`[API] Nova vela em ${new Date(candle.epoch*1000).toLocaleTimeString()}`);
       state.lastCandleEpoch = +c.open_time;
       state.candles.push(candle);
       if (state.candles.length > 100) state.candles.shift();
       processarSinal();
       iniciarTimer();
     } else {
-      if (state.candles.length > 0) {
-        state.candles[state.candles.length - 1] = candle;
-      }
+      state.candles[state.candles.length - 1] = candle;
+      // console.log('[API] Vela atualizada');
     }
   }
 
@@ -228,14 +268,22 @@ function handleMessage(data) {
 }
 
 // =============================================
-// PROCESSAR SINAL
+// PROCESSAR SINAL (com verificação)
 // =============================================
 function processarSinal() {
+  if (state.candles.length === 0) {
+    console.warn('[SINAL] Nenhuma vela disponível');
+    return;
+  }
   const r = gerarSinal(state.candles);
+  console.log(`[SINAL] Resultado: ${r.sinal} (${r.score}%)`);
+
   const agora = new Date().toLocaleTimeString('pt-BR');
 
+  // Atualiza a interface
   atualizarInterface(r);
 
+  // Histórico
   state.history.unshift({ time: agora, sinal: r.sinal, score: r.score });
   if (state.history.length > 6) state.history.pop();
   renderHistorico();
@@ -244,6 +292,9 @@ function processarSinal() {
   if (el) el.textContent = agora;
 }
 
+// =============================================
+// INTERFACE (mantida, mas com fallback)
+// =============================================
 function atualizarInterface(r) {
   const { sinal, score, ema, vwap, volRel, forca } = r;
   const cls = sinal.toLowerCase();
@@ -310,7 +361,7 @@ function renderHistorico() {
 }
 
 // =============================================
-// TIMER
+// TIMER (mantido)
 // =============================================
 function iniciarTimer() {
   clearInterval(state.timerInterval);
@@ -334,7 +385,7 @@ function iniciarTimer() {
 }
 
 // =============================================
-// STATUS
+// STATUS (mantido)
 // =============================================
 function setStatus(type, text) {
   const dot = document.getElementById('statusDot');
@@ -363,4 +414,16 @@ function setStatus(type, text) {
 // =============================================
 // INICIAR
 // =============================================
+console.log('[INIT] Iniciando o sistema');
 conectar();
+
+// Fallback: se após 10 segundos não houver candles, tenta forçar um tick
+setTimeout(() => {
+  if (state.candles.length === 0) {
+    console.warn('[FALLBACK] Nenhum candle recebido em 10s - verificando conexão...');
+    if (state.connected) {
+      console.warn('[FALLBACK] Conectado mas sem dados - pode ser símbolo inválido.');
+      setStatus('error', 'Sem dados - verifique o símbolo');
+    }
+  }
+}, 10000);
