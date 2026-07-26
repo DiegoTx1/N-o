@@ -1,15 +1,15 @@
 // ============================================================
-//  CONFIG – SÓ MEXA AQUI SE SOUBER O QUE FAZ
+//  CONFIG – TESTE COM R_50 (símbolo estável)
 // ============================================================
 const CONFIG = {
     APP_ID: 1089,
-    SYMBOL: 'R_75',               // ← Símbolo garantido (pode trocar para 'CRYPTOIDX', etc.)
-    GRANULARITY: 300,             // 5 minutos (60=1min, 300=5min, 900=15min)
+    SYMBOL: 'R_50',               // ← Use R_50 (ou R_75, 1HZ100V, CRYPTOIDX)
+    GRANULARITY: 300,             // 5 minutos
     EMA_PERIOD: 9,
     VWAP_PERIOD: 20,
     VOL_PERIOD: 20,
     LOOKBACK: 10,
-    MIN_SCORE: 40,                // ← Reduzido para gerar sinais mais frequentes
+    MIN_SCORE: 40,                // Pontuação mínima para emitir sinal
     WS_URL: 'wss://ws.binaryws.com/websockets/v3?app_id=1089'
 };
 
@@ -154,6 +154,7 @@ function conectar() {
         setStatus('connected', `Conectado · ${CONFIG.SYMBOL}`);
         console.log(`[WS] Conectado ao ${CONFIG.SYMBOL}`);
 
+        // Requisição de candles históricos
         state.ws.send(JSON.stringify({
             ticks_history: CONFIG.SYMBOL,
             adjust_start_time: 1,
@@ -165,6 +166,7 @@ function conectar() {
         }));
         console.log('[WS] Solicitado histórico de candles');
 
+        // Inscrição em ticks (preço ao vivo)
         state.ws.send(JSON.stringify({
             ticks: CONFIG.SYMBOL,
             subscribe: 1
@@ -175,6 +177,7 @@ function conectar() {
     state.ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
+            console.log('[WS] Mensagem recebida:', data.msg_type || 'unknown');
             handleMessage(data);
         } catch (e) {
             console.error('[WS] Erro ao parsear mensagem:', e);
@@ -199,9 +202,13 @@ function conectar() {
 function handleMessage(data) {
     if (data.error) {
         console.error('[API] Erro:', data.error);
+        // Exibe erro na tela
+        document.getElementById('errorMsg').style.display = 'block';
+        document.getElementById('errorMsg').textContent = `⚠️ Erro: ${data.error.message || 'símbolo inválido'}`;
         return;
     }
 
+    // ===== CANDLES HISTÓRICOS =====
     if (data.msg_type === 'candles') {
         console.log(`[API] Recebidas ${data.candles.length} velas`);
         state.candles = data.candles.map(c => ({
@@ -214,11 +221,15 @@ function handleMessage(data) {
         }));
         if (state.candles.length > 0) {
             state.lastCandleEpoch = state.candles[state.candles.length - 1].epoch;
+            console.log(`[API] Última vela: ${new Date(state.lastCandleEpoch * 1000).toLocaleTimeString()}`);
             processarSinal();
             iniciarTimer();
+            // Esconde mensagem de erro se deu certo
+            document.getElementById('errorMsg').style.display = 'none';
         }
     }
 
+    // ===== CANDLE ATUAL (streaming) =====
     if (data.msg_type === 'ohlc') {
         const c = data.ohlc;
         const candle = {
@@ -231,16 +242,21 @@ function handleMessage(data) {
         };
 
         if (+c.open_time !== state.lastCandleEpoch) {
+            console.log(`[API] Nova vela em ${new Date(candle.epoch * 1000).toLocaleTimeString()}`);
             state.lastCandleEpoch = +c.open_time;
             state.candles.push(candle);
             if (state.candles.length > 100) state.candles.shift();
             processarSinal();
             iniciarTimer();
+            document.getElementById('errorMsg').style.display = 'none';
         } else {
             state.candles[state.candles.length - 1] = candle;
+            // Atualiza interface com nova informação
+            processarSinal();
         }
     }
 
+    // ===== TICK (preço) =====
     if (data.msg_type === 'tick') {
         state.currentPrice = +data.tick.quote;
         const el = document.getElementById('priceDisplay');
