@@ -1,414 +1,941 @@
+
+'use strict';
+
 // ============================================================
-//  CONFIG – TESTE COM R_50 (símbolo estável)
+// ATLAS IA — MAGIC CANDLE + MAGIC MONEY + SUPORTE/RESISTÊNCIA
+// JavaScript | Deriv WebSocket | M5
+// Sinais: CALL / PUT / ESPERAR
 // ============================================================
+
 const CONFIG = {
     APP_ID: 1089,
-    SYMBOL: 'R_50',               // ← Use R_50 (ou R_75, 1HZ100V, CRYPTOIDX)
-    GRANULARITY: 300,             // 5 minutos
-    EMA_PERIOD: 9,
-    VWAP_PERIOD: 20,
-    VOL_PERIOD: 20,
-    LOOKBACK: 10,
-    MIN_SCORE: 40,                // Pontuação mínima para emitir sinal
-    WS_URL: 'wss://ws.binaryws.com/websockets/v3?app_id=1089'
+
+    // ATENÇÃO:
+    // R_50 é um símbolo da Deriv, não o Crypto IDX da Binomo.
+    // Este código recebe dados da Deriv.
+    // Troque somente por um símbolo válido na API utilizada.
+    SYMBOL: 'R_50',
+
+    GRANULARITY: 300,       // 5 minutos
+    FAST_PERIOD: 3,
+    SLOW_PERIOD: 7,
+    TREND_PERIOD: 200,
+
+    MAGIC_FAST: 1,
+    MAGIC_SLOW: 34,
+    MAGIC_SIGNAL: 4,
+
+    SR_LOOKBACK: 10,
+    MIN_SCORE: 60,
+    HISTORY_LIMIT: 6,
+    MAX_CANDLES: 500,
+
+    WS_URL: 'wss://ws.derivws.com/websockets/v3?app_id=1089'
 };
 
 // ============================================================
-//  STATE
+// ESTADO
 // ============================================================
+
 const state = {
     ws: null,
     candles: [],
-    currentPrice: 0,
+    currentPrice: null,
     timerInterval: null,
-    timerSeconds: 300,
+    reconnectTimer: null,
+    timerSeconds: CONFIG.GRANULARITY,
     connected: false,
     history: [],
     reconnectAttempts: 0,
     lastCandleEpoch: 0,
-    signalCount: 0
+    lastProcessedEpoch: 0,
+    signalCount: 0,
+    connectionGeneration: 0
 };
 
 // ============================================================
-//  INDICADORES
+// UTILITÁRIOS
 // ============================================================
-function calcEMA(closes, period) {
-    if (closes.length < period) return null;
-    const k = 2 / (period + 1);
-    let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    for (let i = period; i < closes.length; i++) {
-        ema = closes[i] * k + ema * (1 - k);
-    }
-    return ema;
+
+function el(id) {
+    return document.getElementById(id);
 }
 
-function calcVWAP(candles) {
-    const slice = candles.slice(-CONFIG.VWAP_PERIOD);
-    let sumTP = 0;
-    slice.forEach(c => {
-        const tp = (c.high + c.low + c.close) / 3;
-        sumTP += tp;
-    });
-    return sumTP / slice.length;
+function setText(id, value) {
+    const node = el(id);
+    if (node) node.textContent = value;
 }
 
-function calcVolRel(candles) {
-    const ranges = candles.map(c => c.high - c.low);
-    const recent = ranges[ranges.length - 1] || 1;
-    const avg = ranges.slice(-CONFIG.VOL_PERIOD - 1, -1).reduce((a, b) => a + b, 0) / CONFIG.VOL_PERIOD;
-    return avg > 0 ? recent / avg : 1;
+function mean(values) {
+    if (!values.length) return null;
+    return values.reduce((sum, n) => sum + n, 0) / values.length;
 }
 
-function calcForca(candle) {
-    const corpo = Math.abs(candle.close - candle.open);
-    const range = candle.high - candle.low;
-    return range === 0 ? 0 : corpo / range;
+function candleRange(c) {
+    return Math.max(0, c.high - c.low);
 }
 
-function rompeMaxima(candles) {
-    const slice = candles.slice(-CONFIG.LOOKBACK - 1, -1);
-    const max = Math.max(...slice.map(c => c.high));
-    return candles[candles.length - 1].close > max;
+function candleBody(c) {
+    return Math.abs(c.close - c.open);
 }
 
-function rompeMinima(candles) {
-    const slice = candles.slice(-CONFIG.LOOKBACK - 1, -1);
-    const min = Math.min(...slice.map(c => c.low));
-    return candles[candles.length - 1].close < min;
+function isBullish(c) {
+    return c.close > c.open;
+}
+
+function isBearish(c) {
+    return c.close < c.open;
 }
 
 // ============================================================
-//  GERADOR DE SINAL
+// MÉDIAS MÓVEIS
 // ============================================================
-function gerarSinal(candles) {
-    if (candles.length < CONFIG.LOOKBACK + 2) {
-        return { sinal: 'ESPERAR', score: 0, ema: null, vwap: null, volRel: null, forca: null };
+
+function smaAt(values, period, index) {
+    if (index < period - 1) return null;
+
+    const slice = values.slice(index - period + 1, index + 1);
+
+    if (
+        slice.length !== period ||
+        slice.some(v => !Number.isFinite(v))
+    ) {
+        return null;
     }
 
-    const vela = candles[candles.length - 1];
+    return mean(slice);
+}
+
+function wmaAt(values, period, index) {
+    if (index < period - 1) return null;
+
+    const slice = values.slice(index - period + 1, index + 1);
+
+    if (
+        slice.length !== period ||
+        slice.some(v => !Number.isFinite(v))
+    ) {
+        return null;
+    }
+
+    let weightedSum = 0;
+    let weightTotal = 0;
+
+    for (let i = 0; i < period; i++) {
+        const weight = i + 1;
+        weightedSum += slice[i] * weight;
+        weightTotal += weight;
+    }
+
+    return weightedSum / weightTotal;
+}
+
+// ============================================================
+// MAGIC CANDLE
+// SMA rápida - SMA lenta
+// Cruzamento da diferença com sua WMA de sinal
+// ============================================================
+
+function calcularMagic(candles) {
     const closes = candles.map(c => c.close);
+    const differential = [];
 
-    const ema = calcEMA(closes, CONFIG.EMA_PERIOD);
-    const vwap = calcVWAP(candles);
-    const volRel = calcVolRel(candles);
-    const forca = calcForca(vela);
+    for (let i = 0; i < closes.length; i++) {
+        const fast = smaAt(closes, CONFIG.MAGIC_FAST, i);
+        const slow = smaAt(closes, CONFIG.MAGIC_SLOW, i);
 
-    let score = 0;
+        differential.push(
+            fast !== null && slow !== null
+                ? fast - slow
+                : null
+        );
+    }
 
-    if (volRel > 1.1) score += 20;
-    else if (volRel > 1.0) score += 10;
+    const last = candles.length - 1;
+    const previous = last - 1;
 
-    if (forca > 0.65) score += 20;
-    else if (forca > 0.55) score += 10;
+    if (previous < 0) {
+        return { crossUp: false, crossDown: false };
+    }
 
-    const tendenciaAlta = vela.close > ema && vela.close > vwap;
-    const tendenciaBaixa = vela.close < ema && vela.close < vwap;
+    const currentDiff = differential[last];
+    const previousDiff = differential[previous];
+
+    const currentSignal = wmaAt(
+        differential, CONFIG.MAGIC_SIGNAL, last
+    );
+
+    const previousSignal = wmaAt(
+        differential, CONFIG.MAGIC_SIGNAL, previous
+    );
+
+    if (
+        currentDiff === null ||
+        previousDiff === null ||
+        currentSignal === null ||
+        previousSignal === null
+    ) {
+        return { crossUp: false, crossDown: false };
+    }
+
+    return {
+        crossUp:
+            currentDiff > currentSignal &&
+            previousDiff <= previousSignal,
+
+        crossDown:
+            currentDiff < currentSignal &&
+            previousDiff >= previousSignal
+    };
+}
+
+// ============================================================
+// MAGIC MONEY — MÉDIAS 3, 7 E 200
+// ============================================================
+
+function calcularTendencia(candles) {
+    const closes = candles.map(c => c.close);
+    const i = candles.length - 1;
+
+    const fast = smaAt(closes, CONFIG.FAST_PERIOD, i);
+    const slow = smaAt(closes, CONFIG.SLOW_PERIOD, i);
+    const trend = smaAt(closes, CONFIG.TREND_PERIOD, i);
+    const close = closes[i];
+
+    const ready =
+        fast !== null &&
+        slow !== null &&
+        trend !== null;
+
+    return {
+        fast,
+        slow,
+        trend,
+        ready,
+
+        alta: ready &&
+            close > trend &&
+            fast > slow &&
+            close > slow,
+
+        baixa: ready &&
+            close < trend &&
+            fast < slow &&
+            close < slow
+    };
+}
+
+// ============================================================
+// PADRÃO DE ENGOLFO
+// ============================================================
+
+function engolfoCompra(current, previous) {
+    return (
+        isBullish(current) &&
+        isBearish(previous) &&
+        current.close > previous.open &&
+        current.open <= previous.close &&
+        candleBody(current) > candleBody(previous)
+    );
+}
+
+function engolfoVenda(current, previous) {
+    return (
+        isBearish(current) &&
+        isBullish(previous) &&
+        current.close < previous.open &&
+        current.open >= previous.close &&
+        candleBody(current) > candleBody(previous)
+    );
+}
+
+// ============================================================
+// SUPORTE E RESISTÊNCIA
+// Usa máximas e mínimas anteriores, sem a vela atual
+// ============================================================
+
+function calcularSR(candles, period = CONFIG.SR_LOOKBACK) {
+    if (candles.length < period + 1) {
+        return {
+            resistance: null,
+            support: null,
+            breakoutUp: false,
+            breakoutDown: false
+        };
+    }
+
+    const current = candles[candles.length - 1];
+
+    // Exclui a vela analisada para evitar comparar com ela mesma.
+    const previous = candles.slice(-(period + 1), -1);
+
+    const resistance = Math.max(...previous.map(c => c.high));
+    const support = Math.min(...previous.map(c => c.low));
+
+    return {
+        resistance,
+        support,
+        breakoutUp: current.close > resistance,
+        breakoutDown: current.close < support
+    };
+}
+
+// ============================================================
+// REJEIÇÃO DE SUPORTE/RESISTÊNCIA
+// ============================================================
+
+function rejeicaoCompra(candle, support) {
+    if (support === null) return false;
+
+    const range = candleRange(candle);
+    if (range === 0) return false;
+
+    const lowerWick =
+        Math.min(candle.open, candle.close) - candle.low;
+
+    return (
+        isBullish(candle) &&
+        candle.low <= support + range * 0.15 &&
+        lowerWick / range >= 0.30
+    );
+}
+
+function rejeicaoVenda(candle, resistance) {
+    if (resistance === null) return false;
+
+    const range = candleRange(candle);
+    if (range === 0) return false;
+
+    const upperWick =
+        candle.high - Math.max(candle.open, candle.close);
+
+    return (
+        isBearish(candle) &&
+        candle.high >= resistance - range * 0.15 &&
+        upperWick / range >= 0.30
+    );
+}
+
+// ============================================================
+// EXPANSÃO DO RANGE
+// Não é volume real. Compara o range da vela com velas anteriores.
+// ============================================================
+
+function calcularRangeRelativo(candles, period = 20) {
+    if (candles.length < period + 1) return null;
+
+    const current = candleRange(candles[candles.length - 1]);
+
+    const previous = candles
+        .slice(-(period + 1), -1)
+        .map(candleRange);
+
+    const average = mean(previous);
+
+    if (average === null || average <= 0) return null;
+
+    return current / average;
+}
+
+// ============================================================
+// GERADOR UNIFICADO DE SINAL
+// ============================================================
+
+function gerarSinal(candles) {
+    const empty = {
+        sinal: 'ESPERAR',
+        score: 0,
+        scoreCall: 0,
+        scorePut: 0,
+        ema: null,
+        vwap: null,
+        volRel: null,
+        forca: null,
+        magic: null,
+        tendencia: null,
+        sr: null,
+        motivo: 'Aguardando dados suficientes'
+    };
+
+    const minimum = Math.max(
+        CONFIG.TREND_PERIOD + 2,
+        CONFIG.MAGIC_SLOW + CONFIG.MAGIC_SIGNAL + 2,
+        CONFIG.SR_LOOKBACK + 2
+    );
+
+    if (candles.length < minimum) return empty;
+
+    const current = candles[candles.length - 1];
+    const previous = candles[candles.length - 2];
+
+    const closes = candles.map(c => c.close);
+    const tendencia = calcularTendencia(candles);
+    const magic = calcularMagic(candles);
+    const sr = calcularSR(candles);
+    const rangeRel = calcularRangeRelativo(candles);
+
+    const range = candleRange(current);
+    const forca = range > 0
+        ? candleBody(current) / range
+        : 0;
+
+    const bullEngulf = engolfoCompra(current, previous);
+    const bearEngulf = engolfoVenda(current, previous);
+
+    const supportBounce = rejeicaoCompra(
+        current, sr.support
+    );
+
+    const resistanceReject = rejeicaoVenda(
+        current, sr.resistance
+    );
+
+    let call = 0;
+    let put = 0;
+
+    // Magic CANDLE: cruzamento confirmado.
+    if (magic.crossUp) call += 35;
+    if (magic.crossDown) put += 35;
+
+    // MAGIC MONEY: direção das médias 3, 7 e 200.
+    if (tendencia.alta) call += 20;
+    if (tendencia.baixa) put += 20;
+
+    // Padrão de engolfo.
+    if (bullEngulf) call += 25;
+    if (bearEngulf) put += 25;
+
+    // Rompimento de suporte/resistência.
+    if (sr.breakoutUp) call += 20;
+    if (sr.breakoutDown) put += 20;
+
+    // Rejeição de nível: confirmação adicional.
+    if (supportBounce) call += 10;
+    if (resistanceReject) put += 10;
+
+    // Expansão de range: filtro complementar.
+    // Não adiciona pontos por si só.
+    const rangeExpanded =
+        rangeRel !== null && rangeRel >= 1.10;
+
+    call = Math.min(call, 100);
+    put = Math.min(put, 100);
 
     let sinal = 'ESPERAR';
-    let finalScore = score;
+    let score = 0;
+    let motivo = 'Sem confirmação suficiente';
 
-    if (rompeMaxima(candles) && tendenciaAlta) {
-        score += 60;
-        finalScore = Math.min(score, 100);
-        sinal = finalScore >= CONFIG.MIN_SCORE ? 'CALL' : 'ESPERAR';
-    } else if (rompeMinima(candles) && tendenciaBaixa) {
-        score += 60;
-        finalScore = Math.min(score, 100);
-        sinal = finalScore >= CONFIG.MIN_SCORE ? 'PUT' : 'ESPERAR';
-    } else if (tendenciaAlta && forca > 0.7 && volRel > 1.2) {
-        score += 40;
-        finalScore = Math.min(score, 100);
-        sinal = finalScore >= CONFIG.MIN_SCORE ? 'CALL' : 'ESPERAR';
-    } else if (tendenciaBaixa && forca > 0.7 && volRel > 1.2) {
-        score += 40;
-        finalScore = Math.min(score, 100);
-        sinal = finalScore >= CONFIG.MIN_SCORE ? 'PUT' : 'ESPERAR';
+    // Evita escolher direção quando os dois lados pontuam parecido.
+    if (
+        call >= CONFIG.MIN_SCORE &&
+        call > put
+    ) {
+        sinal = 'CALL';
+        score = call;
+        motivo = 'Confluência de compra confirmada';
+    } else if (
+        put >= CONFIG.MIN_SCORE &&
+        put > call
+    ) {
+        sinal = 'PUT';
+        score = put;
+        motivo = 'Confluência de venda confirmada';
+    } else if (call === put && call > 0) {
+        motivo = 'Condições conflitantes';
     }
 
-    // Fallback: se score alto mas nenhuma condição especial
-    if (sinal === 'ESPERAR' && finalScore >= CONFIG.MIN_SCORE) {
-        if (tendenciaAlta) sinal = 'CALL';
-        else if (tendenciaBaixa) sinal = 'PUT';
-    }
-
-    if (sinal !== 'ESPERAR') {
-        state.signalCount++;
-        console.log(`🔔 Sinal #${state.signalCount}: ${sinal} (${finalScore}%)`);
-    }
-
-    return { sinal, score: finalScore, ema, vwap, volRel, forca };
+    // A força do corpo é informativa; não representa probabilidade.
+    return {
+        sinal,
+        score,
+        scoreCall: call,
+        scorePut: put,
+        ema: tendencia.fast,
+        vwap: null,
+        volRel: rangeRel,
+        forca,
+        magic,
+        tendencia,
+        sr,
+        rangeExpanded,
+        motivo
+    };
 }
 
 // ============================================================
-//  WEBSOCKET
+// WEBSOCKET
 // ============================================================
+
 function conectar() {
-    setStatus('connecting', 'Conectando…');
-    console.log('[WS] Tentando conectar...');
+    clearTimeout(state.reconnectTimer);
 
-    state.ws = new WebSocket(CONFIG.WS_URL);
+    if (
+        state.ws &&
+        (state.ws.readyState === WebSocket.OPEN ||
+         state.ws.readyState === WebSocket.CONNECTING)
+    ) {
+        return;
+    }
 
-    state.ws.onopen = () => {
+    const generation = ++state.connectionGeneration;
+
+    setStatus('connecting', 'Conectando...');
+    console.log('[WS] Conectando à API:', CONFIG.SYMBOL);
+
+    let ws;
+
+    try {
+        ws = new WebSocket(CONFIG.WS_URL);
+    } catch (error) {
+        console.error('[WS] Falha ao criar conexão:', error);
+        agendarReconexao();
+        return;
+    }
+
+    state.ws = ws;
+
+    ws.onopen = () => {
+        if (generation !== state.connectionGeneration) return;
+
         state.connected = true;
         state.reconnectAttempts = 0;
-        setStatus('connected', `Conectado · ${CONFIG.SYMBOL}`);
-        console.log(`[WS] Conectado ao ${CONFIG.SYMBOL}`);
 
-        // Requisição de candles históricos
-        state.ws.send(JSON.stringify({
+        setStatus('connected', `Conectado · ${CONFIG.SYMBOL}`);
+
+        // Histórico e assinatura de candles.
+        ws.send(JSON.stringify({
             ticks_history: CONFIG.SYMBOL,
             adjust_start_time: 1,
-            count: 60,
+            count: CONFIG.MAX_CANDLES,
             end: 'latest',
             granularity: CONFIG.GRANULARITY,
             style: 'candles',
             subscribe: 1
         }));
-        console.log('[WS] Solicitado histórico de candles');
 
-        // Inscrição em ticks (preço ao vivo)
-        state.ws.send(JSON.stringify({
+        // Preço atual.
+        ws.send(JSON.stringify({
             ticks: CONFIG.SYMBOL,
             subscribe: 1
         }));
-        console.log('[WS] Inscrito em ticks');
     };
 
-    state.ws.onmessage = (event) => {
+    ws.onmessage = event => {
+        if (generation !== state.connectionGeneration) return;
+
         try {
-            const data = JSON.parse(event.data);
-            console.log('[WS] Mensagem recebida:', data.msg_type || 'unknown');
-            handleMessage(data);
-        } catch (e) {
-            console.error('[WS] Erro ao parsear mensagem:', e);
+            handleMessage(JSON.parse(event.data));
+        } catch (error) {
+            console.error('[WS] Erro ao processar mensagem:', error);
         }
     };
 
-    state.ws.onerror = (err) => {
-        console.error('[WS] Erro:', err);
+    ws.onerror = error => {
+        console.error('[WS] Erro de conexão:', error);
         setStatus('error', 'Erro de conexão');
     };
 
-    state.ws.onclose = () => {
+    ws.onclose = () => {
+        if (generation !== state.connectionGeneration) return;
+
         state.connected = false;
-        console.warn('[WS] Conexão fechada');
+        state.ws = null;
+
         setStatus('error', 'Desconectado');
-        const delay = Math.min(3000 * (state.reconnectAttempts + 1), 15000);
-        state.reconnectAttempts++;
-        setTimeout(conectar, delay);
+        agendarReconexao();
     };
 }
 
+function agendarReconexao() {
+    if (state.reconnectTimer) return;
+
+    const delay = Math.min(
+        2000 * Math.pow(2, state.reconnectAttempts),
+        30000
+    );
+
+    state.reconnectAttempts++;
+
+    state.reconnectTimer = setTimeout(() => {
+        state.reconnectTimer = null;
+        conectar();
+    }, delay);
+}
+
+// ============================================================
+// RECEBIMENTO DOS DADOS
+// ============================================================
+
 function handleMessage(data) {
     if (data.error) {
-        console.error('[API] Erro:', data.error);
-        // Exibe erro na tela
-        document.getElementById('errorMsg').style.display = 'block';
-        document.getElementById('errorMsg').textContent = `⚠️ Erro: ${data.error.message || 'símbolo inválido'}`;
+        console.error('[API]', data.error.message);
+
+        const error = el('errorMsg');
+        if (error) {
+            error.style.display = 'block';
+            error.textContent =
+                `Erro da API: ${data.error.message}`;
+        }
+
         return;
     }
 
-    // ===== CANDLES HISTÓRICOS =====
-    if (data.msg_type === 'candles') {
-        console.log(`[API] Recebidas ${data.candles.length} velas`);
-        state.candles = data.candles.map(c => ({
-            open: +c.open,
-            high: +c.high,
-            low: +c.low,
-            close: +c.close,
-            volume: 1,
-            epoch: c.epoch
-        }));
-        if (state.candles.length > 0) {
-            state.lastCandleEpoch = state.candles[state.candles.length - 1].epoch;
-            console.log(`[API] Última vela: ${new Date(state.lastCandleEpoch * 1000).toLocaleTimeString()}`);
-            processarSinal();
-            iniciarTimer();
-            // Esconde mensagem de erro se deu certo
-            document.getElementById('errorMsg').style.display = 'none';
-        }
+    if (data.msg_type === 'candles' && Array.isArray(data.candles)) {
+        const candles = data.candles.map(c => ({
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+            epoch: Number(c.epoch)
+        })).filter(c =>
+            Number.isFinite(c.epoch) &&
+            Number.isFinite(c.open) &&
+            Number.isFinite(c.high) &&
+            Number.isFinite(c.low) &&
+            Number.isFinite(c.close)
+        );
+
+        if (!candles.length) return;
+
+        state.candles = candles.slice(-CONFIG.MAX_CANDLES);
+        state.lastCandleEpoch =
+            state.candles[state.candles.length - 1].epoch;
+
+        // Não emite sinal histórico usando a vela possivelmente aberta.
+        atualizarInterface({
+            sinal: 'ESPERAR',
+            score: 0,
+            ema: null,
+            vwap: null,
+            volRel: null,
+            forca: null,
+            motivo: 'Aguardando fechamento da próxima vela'
+        });
+
+        iniciarTimer();
+        return;
     }
 
-    // ===== CANDLE ATUAL (streaming) =====
-    if (data.msg_type === 'ohlc') {
+    if (data.msg_type === 'ohlc' && data.ohlc) {
         const c = data.ohlc;
+
         const candle = {
-            open: +c.open,
-            high: +c.high,
-            low: +c.low,
-            close: +c.close,
-            volume: 1,
-            epoch: +c.open_time
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+            epoch: Number(c.open_time)
         };
 
-        if (+c.open_time !== state.lastCandleEpoch) {
-            console.log(`[API] Nova vela em ${new Date(candle.epoch * 1000).toLocaleTimeString()}`);
-            state.lastCandleEpoch = +c.open_time;
+        if (
+            !Number.isFinite(candle.epoch) ||
+            !Number.isFinite(candle.close)
+        ) return;
+
+        if (!state.candles.length) {
             state.candles.push(candle);
-            if (state.candles.length > 100) state.candles.shift();
-            processarSinal();
+            state.lastCandleEpoch = candle.epoch;
             iniciarTimer();
-            document.getElementById('errorMsg').style.display = 'none';
-        } else {
+            return;
+        }
+
+        if (candle.epoch > state.lastCandleEpoch) {
+            // A vela anterior terminou. Analisa apenas essa vela fechada.
+            const closedCandles = state.candles.slice();
+
+            if (
+                closedCandles.length &&
+                closedCandles[closedCandles.length - 1].epoch >
+                    state.lastProcessedEpoch
+            ) {
+                processarSinal(closedCandles);
+            }
+
+            state.candles.push(candle);
+            state.candles = state.candles.slice(-CONFIG.MAX_CANDLES);
+            state.lastCandleEpoch = candle.epoch;
+
+            iniciarTimer();
+        } else if (candle.epoch === state.lastCandleEpoch) {
+            // Atualiza a vela em formação, sem gerar sinais nela.
             state.candles[state.candles.length - 1] = candle;
-            // Atualiza interface com nova informação
-            processarSinal();
         }
     }
 
-    // ===== TICK (preço) =====
-    if (data.msg_type === 'tick') {
-        state.currentPrice = +data.tick.quote;
-        const el = document.getElementById('priceDisplay');
-        if (el) el.textContent = state.currentPrice.toFixed(2);
+    if (data.msg_type === 'tick' && data.tick) {
+        state.currentPrice = Number(data.tick.quote);
+
+        if (Number.isFinite(state.currentPrice)) {
+            setText('priceDisplay', state.currentPrice.toFixed(2));
+        }
     }
 }
 
 // ============================================================
-//  PROCESSAR SINAL
+// PROCESSAMENTO — UMA VEZ POR VELA FECHADA
 // ============================================================
-function processarSinal() {
-    if (state.candles.length === 0) return;
-    const r = gerarSinal(state.candles);
-    const agora = new Date().toLocaleTimeString('pt-BR');
+
+function processarSinal(closedCandles) {
+    if (!closedCandles || !closedCandles.length) return;
+
+    const candle = closedCandles[closedCandles.length - 1];
+
+    if (candle.epoch <= state.lastProcessedEpoch) return;
+
+    state.lastProcessedEpoch = candle.epoch;
+
+    const r = gerarSinal(closedCandles);
 
     atualizarInterface(r);
 
-    state.history.unshift({ time: agora, sinal: r.sinal, score: r.score });
-    if (state.history.length > 6) state.history.pop();
-    renderHistorico();
+    const time = new Date(candle.epoch * 1000)
+        .toLocaleTimeString('pt-BR');
 
-    const el = document.getElementById('updateTime');
-    if (el) el.textContent = agora;
+    if (r.sinal !== 'ESPERAR') {
+        state.signalCount++;
+
+        console.log(
+            `[SINAL #${state.signalCount}] ${r.sinal}` +
+            ` | Score técnico: ${r.score}` +
+            ` | Vela: ${time}` +
+            ` | ${r.motivo}`
+        );
+    }
+
+    state.history.unshift({
+        time,
+        sinal: r.sinal,
+        score: r.score
+    });
+
+    state.history = state.history.slice(0, CONFIG.HISTORY_LIMIT);
+    renderHistorico();
+    setText('updateTime', time);
 }
 
+// ============================================================
+// INTERFACE
+// ============================================================
+
 function atualizarInterface(r) {
-    const { sinal, score, ema, vwap, volRel, forca } = r;
+    const sinal = r.sinal || 'ESPERAR';
     const cls = sinal.toLowerCase();
 
-    const signalCard = document.getElementById('signalCard');
-    if (signalCard) signalCard.className = `signal-card ${cls}`;
+    const card = el('signalCard');
+    if (card) card.className = `signal-card ${cls}`;
 
-    const val = document.getElementById('signalValue');
-    if (val) { val.textContent = sinal; val.className = `signal-value ${cls}`; }
+    const value = el('signalValue');
+    if (value) {
+        value.textContent = sinal;
+        value.className = `signal-value ${cls}`;
+    }
 
-    const arrow = document.getElementById('signalArrow');
+    const arrow = el('signalArrow');
     if (arrow) {
-        arrow.textContent = sinal === 'CALL' ? '↑' : sinal === 'PUT' ? '↓' : '—';
+        arrow.textContent =
+            sinal === 'CALL' ? '↑' :
+            sinal === 'PUT' ? '↓' : '—';
+
         arrow.className = `signal-arrow ${cls}`;
     }
 
-    const scoreText = document.getElementById('scoreText');
-    if (scoreText) scoreText.textContent = `${score}%`;
+    const score = Math.max(0, Math.min(100, r.score || 0));
 
-    const bar = document.getElementById('scoreBar');
-    if (bar) { bar.style.width = `${score}%`; bar.className = `score-bar-fill ${cls}`; }
+    setText('scoreText', `${score}%`);
 
-    if (ema !== null) {
-        const emaVal = document.getElementById('emaVal');
-        if (emaVal) emaVal.textContent = ema.toFixed(2);
-        const emaSub = document.getElementById('emaSub');
-        if (emaSub && state.candles.length > 0)
-            emaSub.textContent = state.candles[state.candles.length-1].close > ema ? '▲ acima' : '▼ abaixo';
+    const bar = el('scoreBar');
+    if (bar) {
+        bar.style.width = `${score}%`;
+        bar.className = `score-bar-fill ${cls}`;
     }
 
-    if (vwap !== null) {
-        const vwapVal = document.getElementById('vwapVal');
-        if (vwapVal) vwapVal.textContent = vwap.toFixed(2);
-        const vwapSub = document.getElementById('vwapSub');
-        if (vwapSub && state.candles.length > 0)
-            vwapSub.textContent = state.candles[state.candles.length-1].close > vwap ? '▲ acima' : '▼ abaixo';
+    if (r.ema !== null && Number.isFinite(r.ema)) {
+        setText('emaVal', r.ema.toFixed(2));
     }
 
-    if (volRel !== null) {
-        const volVal = document.getElementById('volVal');
-        if (volVal) volVal.textContent = volRel.toFixed(2) + 'x';
-        const volSub = document.getElementById('volSub');
-        if (volSub) volSub.textContent = volRel > 1.1 ? 'volume alto' : volRel > 1 ? 'volume ok' : 'volume baixo';
+    if (r.vwap !== null && Number.isFinite(r.vwap)) {
+        setText('vwapVal', r.vwap.toFixed(2));
+    } else {
+        setText('vwapVal', 'N/A');
     }
 
-    if (forca !== null) {
-        const forcaVal = document.getElementById('forcaVal');
-        if (forcaVal) forcaVal.textContent = (forca * 100).toFixed(0) + '%';
-        const forcaSub = document.getElementById('forcaSub');
-        if (forcaSub) forcaSub.textContent = forca > 0.65 ? 'vela forte' : forca > 0.45 ? 'vela média' : 'vela fraca';
+    if (r.volRel !== null && Number.isFinite(r.volRel)) {
+        setText('volVal', `${r.volRel.toFixed(2)}x`);
+
+        setText(
+            'volSub',
+            r.volRel >= 1.1
+                ? 'range expandido'
+                : 'range normal'
+        );
+    } else {
+        setText('volVal', 'N/A');
     }
+
+    if (r.forca !== null && Number.isFinite(r.forca)) {
+        setText('forcaVal', `${(r.forca * 100).toFixed(0)}%`);
+
+        setText(
+            'forcaSub',
+            r.forca > 0.65 ? 'vela forte' :
+            r.forca > 0.45 ? 'vela média' :
+            'vela fraca'
+        );
+    }
+
+    if (r.tendencia) {
+        setText(
+            'emaSub',
+            r.tendencia.alta ? 'Tendência de alta' :
+            r.tendencia.baixa ? 'Tendência de baixa' :
+            r.tendencia.ready ? 'Tendência indefinida' :
+            'Aguardando 200 velas'
+        );
+    }
+
+    if (r.sr) {
+        setText(
+            'srResistance',
+            r.sr.resistance === null ? 'N/A' :
+            r.sr.resistance.toFixed(2)
+        );
+
+        setText(
+            'srSupport',
+            r.sr.support === null ? 'N/A' :
+            r.sr.support.toFixed(2)
+        );
+    }
+
+    setText('signalReason', r.motivo || 'Aguardando confirmação');
+
+    const error = el('errorMsg');
+    if (error && state.connected) error.style.display = 'none';
 }
 
 function renderHistorico() {
-    const list = document.getElementById('historyList');
-    if (!list || state.history.length === 0) return;
-    list.innerHTML = state.history.map(h => `
-        <div class="history-item">
-            <span class="history-time">${h.time}</span>
-            <span class="history-badge ${h.sinal.toLowerCase()}">${h.sinal}</span>
-            <span class="history-score">${h.score}%</span>
-        </div>
-    `).join('');
+    const list = el('historyList');
+    if (!list) return;
+
+    list.innerHTML = state.history.map(h => {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+
+        const time = document.createElement('span');
+        time.className = 'history-time';
+        time.textContent = h.time;
+
+        const badge = document.createElement('span');
+        badge.className = `history-badge ${h.sinal.toLowerCase()}`;
+        badge.textContent = h.sinal;
+
+        const score = document.createElement('span');
+        score.className = 'history-score';
+        score.textContent = `${h.score}%`;
+
+        item.append(time, badge, score);
+        return item.outerHTML;
+    }).join('');
 }
 
 // ============================================================
-//  TIMER
+// TIMER M5
 // ============================================================
+
 function iniciarTimer() {
     clearInterval(state.timerInterval);
-    const agora = Math.floor(Date.now() / 1000);
-    state.timerSeconds = CONFIG.GRANULARITY - (agora % CONFIG.GRANULARITY);
 
-    const el = document.getElementById('timer');
+    const update = () => {
+        const now = Math.floor(Date.now() / 1000);
 
-    state.timerInterval = setInterval(() => {
-        state.timerSeconds--;
-        if (state.timerSeconds < 0) state.timerSeconds = CONFIG.GRANULARITY;
+        state.timerSeconds =
+            CONFIG.GRANULARITY - (now % CONFIG.GRANULARITY);
 
-        if (el) {
-            const min = Math.floor(state.timerSeconds / 60);
-            const sec = state.timerSeconds % 60;
-            el.textContent = `${min}:${String(sec).padStart(2, '0')}`;
-            if (state.timerSeconds <= 10) el.classList.add('urgent');
-            else el.classList.remove('urgent');
+        const min = Math.floor(state.timerSeconds / 60);
+        const sec = state.timerSeconds % 60;
+
+        const timer = el('timer');
+
+        if (timer) {
+            timer.textContent =
+                `${min}:${String(sec).padStart(2, '0')}`;
+
+            timer.classList.toggle(
+                'urgent',
+                state.timerSeconds <= 10
+            );
         }
-    }, 1000);
+    };
+
+    update();
+    state.timerInterval = setInterval(update, 1000);
 }
 
 // ============================================================
-//  STATUS
+// STATUS
 // ============================================================
-function setStatus(type, text) {
-    const dot = document.getElementById('statusDot');
-    const txt = document.getElementById('statusText');
-    const live = document.getElementById('liveText');
-    const liveDot = document.getElementById('liveDot');
-    const errorMsg = document.getElementById('errorMsg');
+
+function setStatus(type, message) {
+    const dot = el('statusDot');
+    const text = el('statusText');
+    const live = el('liveText');
+    const liveDot = el('liveDot');
 
     if (dot) dot.className = `status-dot ${type}`;
-    if (txt) txt.textContent = text;
+    if (text) text.textContent = message;
 
-    if (type === 'connected') {
-        if (live) live.textContent = 'AO VIVO';
-        if (liveDot) liveDot.style.background = '#2ecc71';
-        if (errorMsg) errorMsg.style.display = 'none';
-    } else if (type === 'connecting') {
-        if (live) live.textContent = 'CONECTANDO';
-        if (liveDot) liveDot.style.background = '#f1c40f';
-    } else {
-        if (live) live.textContent = 'OFFLINE';
-        if (liveDot) liveDot.style.background = '#e74c3c';
-        if (errorMsg) errorMsg.style.display = 'block';
+    if (live) {
+        live.textContent =
+            type === 'connected' ? 'AO VIVO' :
+            type === 'connecting' ? 'CONECTANDO' :
+            'OFFLINE';
+    }
+
+    if (liveDot) {
+        liveDot.style.background =
+            type === 'connected' ? '#2ecc71' :
+            type === 'connecting' ? '#f1c40f' :
+            '#e74c3c';
+    }
+
+    const error = el('errorMsg');
+
+    if (error && type === 'connected') {
+        error.style.display = 'none';
+    } else if (error && type === 'error') {
+        error.style.display = 'block';
+        error.textContent = message;
     }
 }
 
 // ============================================================
-//  INICIAR
+// INICIALIZAÇÃO
 // ============================================================
-console.log('🚀 Robô iniciado');
+
+console.log('Atlas IA — Magic Candle iniciado');
+console.log('Símbolo configurado:', CONFIG.SYMBOL);
+console.log('Período:', CONFIG.GRANULARITY, 'segundos');
+
 conectar();
 
-// Fallback: se após 10s não houver candles, avisa
 setTimeout(() => {
-    if (state.candles.length === 0 && state.connected) {
-        console.warn('⚠️ Nenhum candle recebido – verifique o símbolo');
-        document.getElementById('errorMsg').style.display = 'block';
-        document.getElementById('errorMsg').textContent = '⚠️ Sem dados – verifique se o símbolo está correto';
+    if (!state.candles.length && state.connected) {
+        const error = el('errorMsg');
+
+        if (error) {
+            error.style.display = 'block';
+            error.textContent =
+                'Sem candles. Confirme se o símbolo está disponível na API.';
+        }
     }
 }, 10000);
+
+window.addEventListener('beforeunload', () => {
+    clearInterval(state.timerInterval);
+    clearTimeout(state.reconnectTimer);
+
+    if (state.ws) {
+        state.ws.onclose = null;
+        state.ws.close();
+    }
+});
